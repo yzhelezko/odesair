@@ -310,13 +310,12 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 }
 
 func handleAIInteraction(ctx context.Context, api *tg.Client, config Config, aiClient AIClient, message string) error {
-	aiClient.AddMessageToHistory(Message{Role: "user", Content: message})
-
 	aiResponse, err := aiClient.SendMessage(ctx, message)
 	if err != nil {
 		return fmt.Errorf("error sending message to AI: %v", err)
 	}
 
+	aiClient.AddMessageToHistory(Message{Role: "user", Content: message})
 	aiClient.AddMessageToHistory(Message{Role: "assistant", Content: aiResponse.Text})
 
 	log.Printf("AI Response: %+v", aiResponse)
@@ -546,12 +545,15 @@ func (c *ChatGPTClient) GetMessageHistory() []Message {
 }
 
 func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
+	messages := c.MessageHistory
+	messages = append(messages, Message{Role: "user", Content: message})
+
 	url := "https://api.openai.com/v1/chat/completions"
 	reqBody, err := json.Marshal(map[string]interface{}{
 		"model": "gpt-4o-mini-2024-07-18",
 		"messages": append([]Message{
 			{Role: "system", Content: c.SystemMessage},
-		}, c.MessageHistory...),
+		}, messages...),
 	})
 	if err != nil {
 		return AIJSONResponse{}, err
