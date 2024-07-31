@@ -472,7 +472,7 @@ func formatAIResponse(response AIJSONResponse) string {
 	if response.Danger {
 		emoji = "🚨"
 	}
-	return fmt.Sprintf("%s %s\n\nОпасность: %v %s", response.Text, emoji, response.Danger, emoji)
+	return fmt.Sprintf("%s %s\n\nОпасность: %v", emoji, response.Text, response.Danger)
 }
 
 func (c *ClaudeClient) AddMessageToHistory(message Message) {
