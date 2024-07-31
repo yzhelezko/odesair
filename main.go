@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -22,35 +21,36 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/tg"
-	"golang.org/x/xerrors"
 )
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
+const (
+	maxMessageHistory = 10
+	systemMessageFile = "system_message.txt"
+)
+
+type Config struct {
+	APIID              int
+	APIHash            string
+	PhoneNumber        string
+	Channels           []ChannelInfo
+	MessageLimit       int
+	SessionFilePath    string
+	UpdateInterval     time.Duration
+	AIChoice           string
+	AIAPIKey           string
+	EnableTelegramSend bool
+	IgnoreAirAttack    bool
 }
 
-const maxMessageHistory = 30
-const systemMessageFile = "system_message.txt"
-
-var lastMessage string
-var lastMessageIDs = make(map[string]int)
-
 type ChannelInfo struct {
-	Identifier string // Can be username or channel ID
+	Identifier string
 	IsPrivate  bool
 }
 
-type Config struct {
-	APIID           int
-	APIHash         string
-	PhoneNumber     string
-	Channels        []ChannelInfo
-	MessageLimit    int
-	SessionFilePath string
-	UpdateInterval  time.Duration
-	ClaudeAPIKey    string
-	AIChoice        string // "claude" or "chatgpt"
-	ChatGPTAPIKey   string
+type AIClient interface {
+	SendMessage(ctx context.Context, message string) (AIJSONResponse, error)
+	AddMessageToHistory(message Message)
+	GetMessageHistory() []Message
 }
 
 type AIJSONResponse struct {
@@ -64,29 +64,11 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-type AIClient interface {
-	SendMessage(ctx context.Context, message string) (AIJSONResponse, error)
-	AddMessageToHistory(message Message)
-}
-
 type ClaudeClient struct {
 	APIKey         string
 	HTTPClient     *http.Client
 	SystemMessage  string
 	MessageHistory []Message
-}
-
-type ClaudeRequest struct {
-	Model     string    `json:"model"`
-	System    string    `json:"system"`
-	Messages  []Message `json:"messages"`
-	MaxTokens int       `json:"max_tokens"`
-}
-
-type ClaudeResponse struct {
-	Content []struct {
-		Text string `json:"text"`
-	} `json:"content"`
 }
 
 type ChatGPTClient struct {
@@ -96,256 +78,279 @@ type ChatGPTClient struct {
 	MessageHistory []Message
 }
 
-type ChatGPTRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-}
+func main() {
+	config := loadConfig()
 
-type ChatGPTResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-}
+	log.Printf("Configuration:")
+	log.Printf("  AI Choice: %s", config.AIChoice)
+	log.Printf("  Ignore Air Attack: %v", config.IgnoreAirAttack)
+	log.Printf("  Enable Telegram Send: %v", config.EnableTelegramSend)
 
-type AlertResponse []struct {
-	RegionID      string        `json:"regionId"`
-	RegionType    string        `json:"regionType"`
-	RegionName    string        `json:"regionName"`
-	RegionEngName string        `json:"regionEngName"`
-	LastUpdate    time.Time     `json:"lastUpdate"`
-	ActiveAlerts  []ActiveAlert `json:"activeAlerts"`
-}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
-type ActiveAlert struct {
-	RegionID   string    `json:"regionId"`
-	RegionType string    `json:"regionType"`
-	Type       string    `json:"type"`
-	LastUpdate time.Time `json:"lastUpdate"`
-}
+	client := telegram.NewClient(config.APIID, config.APIHash, telegram.Options{
+		SessionStorage: &session.FileStorage{Path: config.SessionFilePath},
+	})
 
-func NewClaudeClient(apiKey string, systemMessage string) *ClaudeClient {
-	return &ClaudeClient{
-		APIKey:         apiKey,
-		HTTPClient:     &http.Client{},
-		SystemMessage:  systemMessage,
-		MessageHistory: []Message{},
+	aiClient, err := initAIClient(config)
+	if err != nil {
+		log.Fatalf("Failed to initialize AI client: %v", err)
+	}
+
+	// Start watching the system message file
+	go watchSystemMessageFile(aiClient)
+
+	if err := client.Run(ctx, func(ctx context.Context) error {
+		if err := authenticateTelegram(ctx, client, config); err != nil {
+			return fmt.Errorf("auth failed: %w", err)
+		}
+
+		api := client.API()
+		return monitorChannels(ctx, api, config, aiClient)
+	}); err != nil {
+		log.Fatal(err)
 	}
 }
 
-func (c *ClaudeClient) AddMessageToHistory(message Message) {
-	fmt.Println("Message History: ", c.MessageHistory)
-
-	fmt.Println("Message to add: ", message)
-	c.MessageHistory = append(c.MessageHistory, message)
-
-	// Ensure we don't exceed maxMessageHistory
-	for len(c.MessageHistory) > maxMessageHistory {
-		c.MessageHistory = c.MessageHistory[1:]
+func loadConfig() Config {
+	appID, _ := strconv.Atoi(getEnv("APPID", ""))
+	return Config{
+		APIID:       appID,
+		APIHash:     getEnv("APPHASH", ""),
+		PhoneNumber: getEnv("PHONE_NUMBER", ""),
+		Channels: []ChannelInfo{
+			{Identifier: "odessa_infonews", IsPrivate: false},
+			{Identifier: "xydessa_live", IsPrivate: false},
+			{Identifier: "freechat_odesa", IsPrivate: false},
+		},
+		MessageLimit:       5,
+		SessionFilePath:    "tdlib-session",
+		UpdateInterval:     5 * time.Second,
+		AIChoice:           getEnv("AI_CHOICE", "chatgpt"),
+		AIAPIKey:           getEnv("API_KEY", ""),
+		EnableTelegramSend: true,
+		IgnoreAirAttack:    false,
 	}
-
-	fmt.Println("Message History result: ", c.MessageHistory)
 }
 
-func (c *ClaudeClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
-	var aiResp AIJSONResponse
-	maxRetries := 3
-	var lastErr error
+func getEnv(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		// trim value
+		return strings.TrimSpace(value)
+	}
+	return fallback
+}
 
-	c.AddMessageToHistory(Message{Role: "user", Content: message})
+func readSystemMessage() (string, error) {
+	content, err := ioutil.ReadFile(systemMessageFile)
+	if err != nil {
+		return "", fmt.Errorf("error reading system message file: %v", err)
+	}
 
-	for i := 0; i < maxRetries; i++ {
-		url := "https://api.anthropic.com/v1/messages"
+	fmt.Println("System message: ", string(content))
+	return string(content), nil
+}
 
-		requestBody, err := json.Marshal(ClaudeRequest{
-			Model:     "claude-3-5-sonnet-20240620",
-			System:    c.SystemMessage,
-			Messages:  c.MessageHistory,
-			MaxTokens: 1000,
-		})
+func watchSystemMessageFile(aiClient AIClient) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Fatalf("Failed to create file watcher: %v", err)
+	}
+	defer watcher.Close()
 
-		fmt.Println("System message: ", c.SystemMessage)
-		fmt.Println("Message history: ")
-		for i, message := range c.MessageHistory {
-			fmt.Println("Message: ", message, ", index: ", i)
+	done := make(chan bool)
+	go func() {
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Op&fsnotify.Write == fsnotify.Write {
+					log.Println("System message file modified. Updating...")
+					newMessage, err := readSystemMessage()
+					if err != nil {
+						log.Printf("Error reading system message: %v", err)
+						continue
+					}
+					updateAIClientSystemMessage(aiClient, newMessage)
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Println("Error watching system message file:", err)
+			}
 		}
+	}()
 
-		if err != nil {
-			return aiResp, fmt.Errorf("error marshaling request: %v", err)
-		}
+	err = watcher.Add(systemMessageFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	<-done
+}
 
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBody))
-		if err != nil {
-			return aiResp, fmt.Errorf("error creating request: %v", err)
-		}
+func updateAIClientSystemMessage(aiClient AIClient, newMessage string) {
+	switch c := aiClient.(type) {
+	case *ClaudeClient:
+		c.SystemMessage = newMessage
+	case *ChatGPTClient:
+		c.SystemMessage = newMessage
+	default:
+		log.Println("Unknown AI client type")
+	}
+	log.Println("AI client system message updated successfully")
+}
 
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-api-key", c.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
+func initAIClient(config Config) (AIClient, error) {
+	systemMessage, err := readSystemMessage()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read system message: %v", err)
+	}
 
-		resp, err := c.HTTPClient.Do(req)
-		if err != nil {
-			lastErr = fmt.Errorf("error sending request: %v", err)
-			time.Sleep(time.Second * time.Duration(i+1))
-			continue
-		}
-		defer resp.Body.Close()
+	log.Printf("Initializing AI client with choice: %s", config.AIChoice)
 
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			lastErr = fmt.Errorf("error reading response body: %v", err)
-			time.Sleep(time.Second * time.Duration(i+1))
-			continue
-		}
+	switch strings.ToLower(config.AIChoice) {
+	case "claude":
+		log.Println("Initializing Claude client")
+		return &ClaudeClient{
+			APIKey:         config.AIAPIKey,
+			HTTPClient:     &http.Client{},
+			SystemMessage:  systemMessage,
+			MessageHistory: []Message{},
+		}, nil
+	case "chatgpt":
+		log.Println("Initializing ChatGPT client")
+		return &ChatGPTClient{
+			APIKey:         config.AIAPIKey,
+			HTTPClient:     &http.Client{},
+			SystemMessage:  systemMessage,
+			MessageHistory: []Message{},
+		}, nil
+	default:
+		log.Printf("Unknown AI choice: %s", config.AIChoice)
+		return nil, fmt.Errorf("unknown AI choice: %s", config.AIChoice)
+	}
+}
 
-		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("API request failed with status code %d: %s", resp.StatusCode, string(body))
-			time.Sleep(time.Second * time.Duration(i+1))
-			continue
-		}
+func authenticateTelegram(ctx context.Context, client *telegram.Client, config Config) error {
+	flow := auth.NewFlow(auth.Constant(config.PhoneNumber, "", auth.CodeAuthenticatorFunc(func(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
+		fmt.Print("Enter code: ")
+		var code string
+		_, err := fmt.Scan(&code)
+		return code, err
+	})), auth.SendCodeOptions{})
 
-		var claudeResp ClaudeResponse
-		err = json.Unmarshal(body, &claudeResp)
-		if err != nil {
-			lastErr = fmt.Errorf("error unmarshaling response: %v", err)
-			time.Sleep(time.Second * time.Duration(i+1))
-			continue
-		}
+	return client.Auth().IfNecessary(ctx, flow)
+}
 
-		if len(claudeResp.Content) > 0 {
-			err = json.Unmarshal([]byte(claudeResp.Content[0].Text), &aiResp)
-			if err != nil {
-				lastErr = fmt.Errorf("error unmarshaling JSON content: %v", err)
-				time.Sleep(time.Second * time.Duration(i+1))
-				continue
+func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClient AIClient) error {
+	ticker := time.NewTicker(config.UpdateInterval)
+	defer ticker.Stop()
+
+	var mu sync.Mutex
+	lastMessageIDs := make(map[string]int)
+	isFirstRun := true
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if !config.IgnoreAirAttack {
+				isAirAttackActive, err := checkAirAttackStatus()
+				if err != nil {
+					log.Printf("Error checking air attack status: %v", err)
+					continue
+				}
+				if !isAirAttackActive {
+					log.Println("No active air attack. Skipping message check.")
+					continue
+				}
 			}
 
-			if validateAIResponse(aiResp) {
-				return aiResp, nil
-			}
-			lastErr = errors.New("invalid Claude response format")
-		} else {
-			lastErr = errors.New("no content in Claude response")
-		}
+			allMessages := []string{}
+			for _, channelInfo := range config.Channels {
+				messages, err := getMessages(ctx, api, channelInfo, config.MessageLimit)
+				if err != nil {
+					log.Printf("Error getting messages for %s: %v", channelInfo.Identifier, err)
+					continue
+				}
 
-		time.Sleep(time.Second * time.Duration(i+1))
-	}
+				mu.Lock()
+				newMessages := processNewMessages(channelInfo.Identifier, messages, lastMessageIDs)
+				mu.Unlock()
 
-	c.AddMessageToHistory(Message{Role: "assistant", Content: aiResp.Text})
-
-	return aiResp, fmt.Errorf("failed after %d retries. Last error: %v", maxRetries, lastErr)
-}
-
-func NewChatGPTClient(apiKey string, systemMessage string) *ChatGPTClient {
-	return &ChatGPTClient{
-		APIKey:         apiKey,
-		HTTPClient:     &http.Client{},
-		SystemMessage:  systemMessage,
-		MessageHistory: []Message{},
-	}
-}
-
-func (c *ChatGPTClient) AddMessageToHistory(message Message) {
-	c.MessageHistory = append(c.MessageHistory, message)
-	if len(c.MessageHistory) > maxMessageHistory {
-		c.MessageHistory = c.MessageHistory[1:]
-	}
-}
-
-func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
-	var aiResp AIJSONResponse
-	maxRetries := 3
-	var lastErr error
-
-	c.AddMessageToHistory(Message{Role: "user", Content: message})
-
-	for i := 0; i < maxRetries; i++ {
-		url := "https://api.openai.com/v1/chat/completions"
-		sysMessage := c.SystemMessage + "\n\nТвой последний ответ:\n" + lastMessage
-		requestBody, err := json.Marshal(ChatGPTRequest{
-			Model: "gpt-3.5-turbo",
-			Messages: append([]Message{
-				{Role: "system", Content: sysMessage},
-			}, c.MessageHistory...),
-		})
-		if err != nil {
-			return aiResp, fmt.Errorf("error marshaling request: %v", err)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBody))
-		if err != nil {
-			return aiResp, fmt.Errorf("error creating request: %v", err)
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-		resp, err := c.HTTPClient.Do(req)
-		if err != nil {
-			lastErr = fmt.Errorf("error sending request: %v", err)
-			time.Sleep(time.Second * time.Duration(i+1))
-			continue
-		}
-		defer resp.Body.Close()
-
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			lastErr = fmt.Errorf("error reading response body: %v", err)
-			time.Sleep(time.Second * time.Duration(i+1))
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("API request failed with status code %d: %s", resp.StatusCode, string(body))
-			time.Sleep(time.Second * time.Duration(i+1))
-			continue
-		}
-
-		var chatGPTResp ChatGPTResponse
-		err = json.Unmarshal(body, &chatGPTResp)
-		if err != nil {
-			lastErr = fmt.Errorf("error unmarshaling response: %v", err)
-			time.Sleep(time.Second * time.Duration(i+1))
-			continue
-		}
-
-		if len(chatGPTResp.Choices) > 0 {
-			err = json.Unmarshal([]byte(chatGPTResp.Choices[0].Message.Content), &aiResp)
-			if err != nil {
-				lastErr = fmt.Errorf("error unmarshaling JSON content: %v", err)
-				time.Sleep(time.Second * time.Duration(i+1))
-				continue
+				if len(newMessages) > 0 {
+					for _, msg := range newMessages {
+						allMessages = append(allMessages, fmt.Sprintf("Message from %s:\n%s", channelInfo.Identifier, msg))
+					}
+				}
 			}
 
-			if validateAIResponse(aiResp) {
-				return aiResp, nil
+			if len(allMessages) > 0 {
+				if isFirstRun {
+					mergedMessage := mergeMessages(allMessages)
+					if err := handleAIInteraction(ctx, api, config, aiClient, mergedMessage); err != nil {
+						log.Printf("Error handling AI interaction: %v", err)
+					}
+					isFirstRun = false
+				} else {
+					for _, msg := range allMessages {
+						if err := handleAIInteraction(ctx, api, config, aiClient, msg); err != nil {
+							log.Printf("Error handling AI interaction: %v", err)
+						}
+					}
+				}
 			}
-			lastErr = errors.New("invalid ChatGPT response format")
-		} else {
-			lastErr = errors.New("no content in ChatGPT response")
 		}
-
-		time.Sleep(time.Second * time.Duration(i+1))
 	}
-
-	return aiResp, fmt.Errorf("failed after %d retries. Last error: %v", maxRetries, lastErr)
 }
 
-func validateAIResponse(resp AIJSONResponse) bool {
-	return resp.Text != "" && (resp.Danger == true || resp.Danger == false) && (resp.StatusChanged == true || resp.StatusChanged == false)
+func handleAIInteraction(ctx context.Context, api *tg.Client, config Config, aiClient AIClient, message string) error {
+	aiClient.AddMessageToHistory(Message{Role: "user", Content: message})
+
+	aiResponse, err := aiClient.SendMessage(ctx, message)
+	if err != nil {
+		return fmt.Errorf("error sending message to AI: %v", err)
+	}
+
+	aiClient.AddMessageToHistory(Message{Role: "assistant", Content: aiResponse.Text})
+
+	log.Printf("AI Response: %+v", aiResponse)
+
+	if config.EnableTelegramSend {
+		formattedResponse := formatAIResponse(aiResponse)
+		fmt.Println("Sending message to Telegram...")
+		if err := sendToTelegram(ctx, api, "odesair", formattedResponse, !aiResponse.Danger); err != nil {
+			log.Printf("Error sending message to Telegram: %v", err)
+		}
+	} else {
+		log.Printf("Telegram send disabled")
+	}
+
+	fmt.Println("Message history:")
+	messages := aiClient.GetMessageHistory()
+	fmt.Println(messages)
+	return nil
 }
 
 func checkAirAttackStatus() (bool, error) {
 	resp, err := http.Get("https://siren.pp.ua/api/v3/alerts/964")
 	if err != nil {
-		return false, fmt.Errorf("error making request to air attack API: %v", err)
+		return false, err
 	}
 	defer resp.Body.Close()
 
-	var alertResp AlertResponse
+	var alertResp []struct {
+		ActiveAlerts []struct {
+			Type string `json:"type"`
+		} `json:"activeAlerts"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&alertResp); err != nil {
-		return false, fmt.Errorf("error decoding air attack API response: %v", err)
+		return false, err
 	}
 
 	for _, region := range alertResp {
@@ -355,258 +360,7 @@ func checkAirAttackStatus() (bool, error) {
 			}
 		}
 	}
-
 	return false, nil
-}
-
-func sendToTelegram(ctx context.Context, api *tg.Client, channelUsername string, message string, silent bool) error {
-	resolvedPeer, err := api.ContactsResolveUsername(ctx, channelUsername)
-	if err != nil {
-		return fmt.Errorf("failed to resolve username: %v", err)
-	}
-
-	var channel *tg.Channel
-	for _, chat := range resolvedPeer.Chats {
-		if ch, ok := chat.(*tg.Channel); ok {
-			channel = ch
-			break
-		}
-	}
-
-	if channel == nil {
-		return fmt.Errorf("channel not found")
-	}
-
-	randomID := rand.Int63()
-
-	_, err = api.MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
-		Peer:     channel.AsInputPeer(),
-		Message:  message,
-		RandomID: randomID,
-		Silent:   silent,
-	})
-
-	return err
-}
-
-func readSystemMessage() (string, error) {
-	content, err := ioutil.ReadFile(systemMessageFile)
-	if err != nil {
-		return "", fmt.Errorf("error reading system message file: %v", err)
-	}
-	return string(content), nil
-}
-
-func watchSystemMessageFile(aiClient AIClient) error {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return fmt.Errorf("error creating file watcher: %v", err)
-	}
-
-	go func() {
-		for {
-			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					newMessage, err := readSystemMessage()
-					if err != nil {
-						fmt.Printf("Error reading updated system message: %v\n", err)
-						continue
-					}
-					switch c := aiClient.(type) {
-					case *ClaudeClient:
-						c.SystemMessage = newMessage
-					case *ChatGPTClient:
-						c.SystemMessage = newMessage
-					}
-					fmt.Println("System message updated")
-				}
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				fmt.Printf("Error watching system message file: %v\n", err)
-			}
-		}
-	}()
-
-	err = watcher.Add(systemMessageFile)
-	if err != nil {
-		return fmt.Errorf("error adding file to watcher: %v", err)
-	}
-
-	return nil
-}
-
-func main() {
-	config := Config{
-		APIID:       0,  // your app id here
-		APIHash:     "", // your app hash here
-		PhoneNumber: "", // your phone number here
-		Channels: []ChannelInfo{
-			{Identifier: "odessa_infonews", IsPrivate: false},
-			{Identifier: "xydessa_live", IsPrivate: false},
-			{Identifier: "freechat_odesa", IsPrivate: false},
-		},
-		MessageLimit:    4,
-		SessionFilePath: "tdlib-session",
-		UpdateInterval:  5 * time.Second,
-		ClaudeAPIKey:    "claude-api-key-here",
-		AIChoice:        "claude", // claude or "chatgpt"
-		ChatGPTAPIKey:   "chatgpt-api-key-here",
-	}
-
-	if os.Getenv("CLAUDE_API_KEY") != "" {
-		config.ClaudeAPIKey = os.Getenv("CLAUDE_API_KEY")
-		config.AIChoice = "claude"
-	}
-	if os.Getenv("CHATGPT_API_KEY") != "" {
-		config.ChatGPTAPIKey = os.Getenv("CHATGPT_API_KEY")
-		config.AIChoice = "chatgpt"
-	}
-	if os.Getenv("PHONE_NUMBER") != "" {
-		config.PhoneNumber = os.Getenv("PHONE_NUMBER")
-	}
-	if os.Getenv("APPHASH") != "" {
-		config.APIHash = os.Getenv("APPHASH")
-	}
-	if os.Getenv("APPID") != "" {
-		appid, _ := fmt.Printf("%s", os.Getenv("APPID"))
-		config.APIID = appid
-	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
-	client := telegram.NewClient(config.APIID, config.APIHash, telegram.Options{
-		SessionStorage: &session.FileStorage{Path: config.SessionFilePath},
-	})
-
-	systemMessage, err := readSystemMessage()
-	if err != nil {
-		log.Fatalf("Failed to read system message: %v", err)
-	}
-
-	var aiClient AIClient
-	if config.AIChoice == "chatgpt" {
-		aiClient = NewChatGPTClient(config.ChatGPTAPIKey, systemMessage)
-	} else {
-		aiClient = NewClaudeClient(config.ClaudeAPIKey, systemMessage)
-	}
-
-	err = watchSystemMessageFile(aiClient)
-	if err != nil {
-		log.Fatalf("Failed to set up system message file watcher: %v", err)
-	}
-
-	codeAuth := auth.CodeAuthenticatorFunc(func(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
-		fmt.Print("Enter code: ")
-		var code string
-		_, err := fmt.Scan(&code)
-		if err != nil {
-			return "", xerrors.Errorf("failed to scan code: %w", err)
-		}
-		return code, nil
-	})
-
-	flow := auth.NewFlow(
-		auth.Constant(config.PhoneNumber, "", codeAuth),
-		auth.SendCodeOptions{},
-	)
-
-	if err := client.Run(ctx, func(ctx context.Context) error {
-		if err := client.Auth().IfNecessary(ctx, flow); err != nil {
-			return xerrors.Errorf("auth failed: %w", err)
-		}
-
-		api := client.API()
-
-		var wg sync.WaitGroup
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-			isFirstRun := true
-			for {
-				select {
-				case <-ctx.Done():
-					fmt.Println("Shutting down...")
-					return
-				default:
-					isAirAttackActive, err := checkAirAttackStatus()
-					if err != nil {
-						fmt.Printf("Error checking air attack status: %v\n", err)
-						time.Sleep(config.UpdateInterval)
-						continue
-					}
-
-					if !isFirstRun && isAirAttackActive {
-						fmt.Println("No active air attack. Skipping message check.")
-						time.Sleep(config.UpdateInterval)
-						continue
-					}
-
-					allMessages := ""
-					for _, channelInfo := range config.Channels {
-						messages, err := getMessages(ctx, api, channelInfo, config.MessageLimit)
-						if err != nil {
-							fmt.Printf("Error getting messages for %s: %v\n", channelInfo.Identifier, err)
-							continue
-						}
-
-						newMessages := processNewMessages(channelInfo.Identifier, messages)
-						if len(newMessages) > 0 {
-							mergedText := mergeMessages(newMessages)
-							fmt.Printf("\nNew message from %s:\n%s\n", channelInfo.Identifier, mergedText)
-							allMessages += fmt.Sprintf("Messages from %s:\n%s\n\n", channelInfo.Identifier, mergedText)
-						}
-					}
-
-					if allMessages != "" {
-						// Send gathered messages to AI
-						fmt.Println("Sending message to AI...")
-						aiResponse, err := aiClient.SendMessage(ctx, allMessages)
-						if err != nil {
-							fmt.Printf("Error sending message to AI: %v\n", err)
-						} else {
-							fmt.Printf("AI's response: %+v\n", aiResponse)
-
-							// Send AI's response to the Telegram channel
-							emoj := "✅"
-							silent := true
-							if aiResponse.Danger {
-								emoj = "🚨"
-								silent = false
-							}
-							fmt.Println(silent)
-							if aiResponse.StatusChanged {
-								responseMessage := fmt.Sprintf("%[3]s %[1]s\n\nОпасность: %[2]v %[3]s", aiResponse.Text, aiResponse.Danger, emoj)
-								lastMessage = responseMessage
-								// err = sendToTelegram(ctx, api, "odesair", responseMessage, silent)
-								// if err != nil {
-								// 	fmt.Printf("Error sending message to Telegram: %v\n", err)
-								// 	fmt.Printf("Message content: %s\n", responseMessage)
-								// } else {
-								// 	fmt.Printf("Successfully sent message to Telegram channel 'odesair'\n")
-								// }
-							}
-						}
-					}
-
-					isFirstRun = false
-					time.Sleep(config.UpdateInterval)
-				}
-			}
-		}()
-
-		wg.Wait()
-		return nil
-	}); err != nil {
-		log.Fatal(err)
-	}
 }
 
 func getMessages(ctx context.Context, api *tg.Client, channelInfo ChannelInfo, limit int) ([]tg.MessageClass, error) {
@@ -620,7 +374,7 @@ func getMessages(ctx context.Context, api *tg.Client, channelInfo ChannelInfo, l
 		}
 		inputPeer = &tg.InputPeerChannel{
 			ChannelID:  channelID,
-			AccessHash: 0,
+			AccessHash: 0, // You might need to obtain this value
 		}
 	} else {
 		resolvedPeer, err := api.ContactsResolveUsername(ctx, channelInfo.Identifier)
@@ -660,7 +414,7 @@ func getMessages(ctx context.Context, api *tg.Client, channelInfo ChannelInfo, l
 	}
 }
 
-func processNewMessages(channelID string, messages []tg.MessageClass) []string {
+func processNewMessages(channelID string, messages []tg.MessageClass, lastMessageIDs map[string]int) []string {
 	var newMessages []string
 	latestMessageID := lastMessageIDs[channelID]
 
@@ -682,9 +436,159 @@ func processNewMessages(channelID string, messages []tg.MessageClass) []string {
 }
 
 func mergeMessages(messages []string) string {
-	for i, message := range messages {
-		messages[i] = fmt.Sprintf("message: %s", message)
+	return strings.Join(messages, "\n\n")
+}
+
+func sendToTelegram(ctx context.Context, api *tg.Client, channelUsername, message string, silent bool) error {
+	resolvedPeer, err := api.ContactsResolveUsername(ctx, channelUsername)
+	if err != nil {
+		return fmt.Errorf("failed to resolve username: %v", err)
 	}
 
-	return strings.Join(messages, "\n")
+	var channel *tg.Channel
+	for _, chat := range resolvedPeer.Chats {
+		if ch, ok := chat.(*tg.Channel); ok {
+			channel = ch
+			break
+		}
+	}
+
+	if channel == nil {
+		return fmt.Errorf("channel not found")
+	}
+
+	_, err = api.MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+		Peer:     channel.AsInputPeer(),
+		Message:  message,
+		RandomID: rand.Int63(),
+		Silent:   silent,
+	})
+
+	return err
+}
+
+func formatAIResponse(response AIJSONResponse) string {
+	emoji := "✅"
+	if response.Danger {
+		emoji = "🚨"
+	}
+	return fmt.Sprintf("%s %s\n\nОпасность: %v %s", response.Text, emoji, response.Danger, emoji)
+}
+
+func (c *ClaudeClient) AddMessageToHistory(message Message) {
+	c.MessageHistory = append(c.MessageHistory, message)
+	if len(c.MessageHistory) > maxMessageHistory {
+		c.MessageHistory = c.MessageHistory[1:]
+	}
+}
+
+func (c *ClaudeClient) GetMessageHistory() []Message {
+	return c.MessageHistory
+}
+
+func (c *ClaudeClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
+	url := "https://api.anthropic.com/v1/messages"
+	reqBody, err := json.Marshal(map[string]interface{}{
+		"model":    "claude-3-opus-20240229",
+		"system":   c.SystemMessage,
+		"messages": c.MessageHistory,
+	})
+	if err != nil {
+		return AIJSONResponse{}, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return AIJSONResponse{}, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return AIJSONResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return AIJSONResponse{}, err
+	}
+
+	var claudeResp struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(body, &claudeResp); err != nil {
+		return AIJSONResponse{}, err
+	}
+
+	var aiResp AIJSONResponse
+	if err := json.Unmarshal([]byte(claudeResp.Content[0].Text), &aiResp); err != nil {
+		return AIJSONResponse{}, err
+	}
+
+	return aiResp, nil
+}
+
+func (c *ChatGPTClient) AddMessageToHistory(message Message) {
+	c.MessageHistory = append(c.MessageHistory, message)
+	if len(c.MessageHistory) > maxMessageHistory {
+		c.MessageHistory = c.MessageHistory[1:]
+	}
+}
+
+func (c *ChatGPTClient) GetMessageHistory() []Message {
+	return c.MessageHistory
+}
+
+func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
+	url := "https://api.openai.com/v1/chat/completions"
+	reqBody, err := json.Marshal(map[string]interface{}{
+		"model": "gpt-4o-mini-2024-07-18",
+		"messages": append([]Message{
+			{Role: "system", Content: c.SystemMessage},
+		}, c.MessageHistory...),
+	})
+	if err != nil {
+		return AIJSONResponse{}, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return AIJSONResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.APIKey))
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return AIJSONResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return AIJSONResponse{}, err
+	}
+
+	var chatGPTResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &chatGPTResp); err != nil {
+		return AIJSONResponse{}, err
+	}
+
+	var aiResp AIJSONResponse
+	if err := json.Unmarshal([]byte(chatGPTResp.Choices[0].Message.Content), &aiResp); err != nil {
+		return AIJSONResponse{}, err
+	}
+
+	return aiResp, nil
 }
