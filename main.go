@@ -597,9 +597,12 @@ func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSON
 }
 
 func cleanString(input string) string {
-	// Regular expression to match numbers, Russian, Ukrainian, and English characters,
-	// as well as spaces and newlines
-	regex := regexp.MustCompile(`[^0-9a-zA-Zа-яА-ЯіІїЇєЄґҐ'\s]+`)
+	// Regular expression to match:
+	// - numbers
+	// - Russian, Ukrainian, and English characters
+	// - spaces and newlines
+	// - common symbols
+	regex := regexp.MustCompile(`[^0-9a-zA-Zа-яА-ЯіІїЇєЄґҐ'\s!@#$%^&*()_+\-=\[\]{};:"\\|,.<>/?]+`)
 
 	// Replace all non-matching characters with an empty string
 	cleaned := regex.ReplaceAllString(input, "")
