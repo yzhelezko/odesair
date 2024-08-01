@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -310,12 +311,12 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 }
 
 func handleAIInteraction(ctx context.Context, api *tg.Client, config Config, aiClient AIClient, message string) error {
-	aiResponse, err := aiClient.SendMessage(ctx, message)
+	aiResponse, err := aiClient.SendMessage(ctx, cleanString(message))
 	if err != nil {
 		return fmt.Errorf("error sending message to AI: %v", err)
 	}
 
-	aiClient.AddMessageToHistory(Message{Role: "user", Content: message})
+	aiClient.AddMessageToHistory(Message{Role: "user", Content: cleanString(message)})
 	aiClient.AddMessageToHistory(Message{Role: "assistant", Content: aiResponse.Text})
 
 	log.Printf("AI Response: %+v", aiResponse)
@@ -593,4 +594,15 @@ func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSON
 	}
 
 	return aiResp, nil
+}
+
+func cleanString(input string) string {
+	// Regular expression to match numbers, Russian, Ukrainian, and English characters,
+	// as well as spaces and newlines
+	regex := regexp.MustCompile(`[^0-9a-zA-Zа-яА-ЯіІїЇєЄґҐ'\s]+`)
+
+	// Replace all non-matching characters with an empty string
+	cleaned := regex.ReplaceAllString(input, "")
+
+	return cleaned
 }
