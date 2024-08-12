@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,9 +24,31 @@ import (
 )
 
 const (
-	maxMessageHistory = 10
+	maxMessageHistory = 20
 	systemMessageFile = "system_message.txt"
 )
+
+func loadConfig() Config {
+	appID, _ := strconv.Atoi(getEnv("APPID", ""))
+	return Config{
+		APIID:       appID,
+		APIHash:     getEnv("APPHASH", ""),
+		PhoneNumber: getEnv("PHONE_NUMBER", ""),
+		Channels: []ChannelInfo{
+			{Identifier: "odessa_infonews", IsPrivate: false},
+			{Identifier: "xydessa_live", IsPrivate: false},
+			{Identifier: "freechat_odesa", IsPrivate: false},
+			// {Identifier: "odesairtest", IsPrivate: false},
+		},
+		MessageLimit:       1,
+		SessionFilePath:    "tdlib-session",
+		UpdateInterval:     5 * time.Second,
+		AIChoice:           getEnv("AI_CHOICE", "chatgpt"),
+		AIAPIKey:           getEnv("API_KEY", ""),
+		EnableTelegramSend: true,
+		IgnoreAirAttack:    false,
+	}
+}
 
 type Config struct {
 	APIID              int
@@ -56,6 +77,7 @@ type AIClient interface {
 
 type AIJSONResponse struct {
 	Text          string `json:"text"`
+	Principle     string `json:"principle"`
 	Danger        bool   `json:"danger"`
 	StatusChanged bool   `json:"statusChanged"`
 }
@@ -111,27 +133,6 @@ func main() {
 		return monitorChannels(ctx, api, config, aiClient)
 	}); err != nil {
 		log.Fatal(err)
-	}
-}
-
-func loadConfig() Config {
-	appID, _ := strconv.Atoi(getEnv("APPID", ""))
-	return Config{
-		APIID:       appID,
-		APIHash:     getEnv("APPHASH", ""),
-		PhoneNumber: getEnv("PHONE_NUMBER", ""),
-		Channels: []ChannelInfo{
-			{Identifier: "odessa_infonews", IsPrivate: false},
-			{Identifier: "xydessa_live", IsPrivate: false},
-			{Identifier: "freechat_odesa", IsPrivate: false},
-		},
-		MessageLimit:       5,
-		SessionFilePath:    "tdlib-session",
-		UpdateInterval:     5 * time.Second,
-		AIChoice:           getEnv("AI_CHOICE", "chatgpt"),
-		AIAPIKey:           getEnv("API_KEY", ""),
-		EnableTelegramSend: true,
-		IgnoreAirAttack:    false,
 	}
 }
 
@@ -267,7 +268,6 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 					continue
 				}
 				if !isAirAttackActive {
-					log.Println("No active air attack. Skipping message check.")
 					continue
 				}
 			}
@@ -286,7 +286,10 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 
 				if len(newMessages) > 0 {
 					for _, msg := range newMessages {
-						allMessages = append(allMessages, fmt.Sprintf("Message from %s:\n%s", channelInfo.Identifier, msg))
+						msg = cleanString(msg)
+						if len(msg) > 0 {
+							allMessages = append(allMessages, fmt.Sprintf("Message from %s:\n%s", channelInfo.Identifier, msg))
+						}
 					}
 				}
 			}
@@ -300,8 +303,11 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 					isFirstRun = false
 				} else {
 					for _, msg := range allMessages {
-						if err := handleAIInteraction(ctx, api, config, aiClient, msg); err != nil {
-							log.Printf("Error handling AI interaction: %v", err)
+						msg = cleanString(msg)
+						if len(msg) > 0 {
+							if err := handleAIInteraction(ctx, api, config, aiClient, msg); err != nil {
+								log.Printf("Error handling AI interaction: %v", err)
+							}
 						}
 					}
 				}
@@ -311,29 +317,32 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 }
 
 func handleAIInteraction(ctx context.Context, api *tg.Client, config Config, aiClient AIClient, message string) error {
+	messages := aiClient.GetMessageHistory()
+	fmt.Println("----------------------------------------------------")
+	fmt.Println("MESSAGE HISTORY: ", messages)
+	fmt.Println("----------------------------------------------------")
+	fmt.Println("----------------------------------------------------")
+	fmt.Println("LAST MESSAGE: ", message)
 	aiResponse, err := aiClient.SendMessage(ctx, cleanString(message))
 	if err != nil {
 		return fmt.Errorf("error sending message to AI: %v", err)
 	}
 
-	aiClient.AddMessageToHistory(Message{Role: "user", Content: cleanString(message)})
-	aiClient.AddMessageToHistory(Message{Role: "assistant", Content: aiResponse.Text})
-
 	log.Printf("AI Response: %+v", aiResponse)
-
+	fmt.Println("----------------------------------------------------")
 	if config.EnableTelegramSend {
 		formattedResponse := formatAIResponse(aiResponse)
 		fmt.Println("Sending message to Telegram...")
-		if err := sendToTelegram(ctx, api, "odesair", formattedResponse, !aiResponse.Danger); err != nil {
-			log.Printf("Error sending message to Telegram: %v", err)
+		if aiResponse.StatusChanged {
+			if err := sendToTelegram(ctx, api, "odesair", formattedResponse, !aiResponse.Danger); err != nil {
+				log.Printf("Error sending message to Telegram: %v", err)
+			}
+		} else {
+			log.Printf("Status not changed, skipping message send")
 		}
 	} else {
 		log.Printf("Telegram send disabled")
 	}
-
-	fmt.Println("Message history:")
-	messages := aiClient.GetMessageHistory()
-	fmt.Println(messages)
 	return nil
 }
 
@@ -425,7 +434,10 @@ func processNewMessages(channelID string, messages []tg.MessageClass, lastMessag
 		}
 
 		if msg.ID > latestMessageID {
-			newMessages = append(newMessages, msg.Message)
+			date := int64(msg.GetDate())
+			unixTimeUTC := time.Unix(date, 0)
+			unitTimeInRFC3339 := unixTimeUTC.Format("15:04:05")
+			newMessages = append(newMessages, unitTimeInRFC3339+"\n"+msg.Message)
 			if msg.ID > lastMessageIDs[channelID] {
 				lastMessageIDs[channelID] = msg.ID
 			}
@@ -472,128 +484,7 @@ func formatAIResponse(response AIJSONResponse) string {
 	if response.Danger {
 		emoji = "🚨"
 	}
-	return fmt.Sprintf("%s %s\n\nОпасность: %v", emoji, response.Text, response.Danger)
-}
-
-func (c *ClaudeClient) AddMessageToHistory(message Message) {
-	c.MessageHistory = append(c.MessageHistory, message)
-	if len(c.MessageHistory) > maxMessageHistory {
-		c.MessageHistory = c.MessageHistory[1:]
-	}
-}
-
-func (c *ClaudeClient) GetMessageHistory() []Message {
-	return c.MessageHistory
-}
-
-func (c *ClaudeClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
-	url := "https://api.anthropic.com/v1/messages"
-	reqBody, err := json.Marshal(map[string]interface{}{
-		"model":    "claude-3-opus-20240229",
-		"system":   c.SystemMessage,
-		"messages": c.MessageHistory,
-	})
-	if err != nil {
-		return AIJSONResponse{}, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return AIJSONResponse{}, err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return AIJSONResponse{}, err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return AIJSONResponse{}, err
-	}
-
-	var claudeResp struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(body, &claudeResp); err != nil {
-		return AIJSONResponse{}, err
-	}
-
-	var aiResp AIJSONResponse
-	if err := json.Unmarshal([]byte(claudeResp.Content[0].Text), &aiResp); err != nil {
-		return AIJSONResponse{}, err
-	}
-
-	return aiResp, nil
-}
-
-func (c *ChatGPTClient) AddMessageToHistory(message Message) {
-	c.MessageHistory = append(c.MessageHistory, message)
-	if len(c.MessageHistory) > maxMessageHistory {
-		c.MessageHistory = c.MessageHistory[1:]
-	}
-}
-
-func (c *ChatGPTClient) GetMessageHistory() []Message {
-	return c.MessageHistory
-}
-
-func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
-	messages := c.MessageHistory
-	messages = append(messages, Message{Role: "user", Content: message})
-
-	url := "https://api.openai.com/v1/chat/completions"
-	reqBody, err := json.Marshal(map[string]interface{}{
-		"model": "gpt-4o-mini-2024-07-18",
-		"messages": append([]Message{
-			{Role: "system", Content: c.SystemMessage},
-		}, messages...),
-	})
-	if err != nil {
-		return AIJSONResponse{}, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return AIJSONResponse{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.APIKey))
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return AIJSONResponse{}, err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return AIJSONResponse{}, err
-	}
-
-	var chatGPTResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &chatGPTResp); err != nil {
-		return AIJSONResponse{}, err
-	}
-
-	var aiResp AIJSONResponse
-	if err := json.Unmarshal([]byte(chatGPTResp.Choices[0].Message.Content), &aiResp); err != nil {
-		return AIJSONResponse{}, err
-	}
-
-	return aiResp, nil
+	return fmt.Sprintf("%s %s", emoji, response.Text)
 }
 
 func cleanString(input string) string {

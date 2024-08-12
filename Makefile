@@ -3,7 +3,7 @@ SHELL=/bin/bash
 .SHELLFLAGS=--norc --noprofile -e -u -o pipefail -c
 
 run:
-	source .env && go run main.go;
+	source .env && go run .;
 
 build:
-	go build -o bin/odesair main.go;
+	go build -o bin/odesair .;
