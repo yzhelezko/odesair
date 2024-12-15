@@ -25,7 +25,7 @@ import (
 
 const (
 	maxMessageHistory = 20
-	systemMessageFile = "system_message.txt"
+	systemMessageFile = "config/system_message.txt"
 	sendToChannel     = "odesair"
 )
 
@@ -42,7 +42,7 @@ func loadConfig() Config {
 			// {Identifier: "odesairtest", IsPrivate: false},
 		},
 		MessageLimit:       1,
-		SessionFilePath:    "tdlib-session",
+		SessionFilePath:    "config/tdlib-session",
 		UpdateInterval:     5 * time.Second,
 		AIChoice:           getEnv("AI_CHOICE", "chatgpt"),
 		AIAPIKey:           getEnv("API_KEY", ""),
