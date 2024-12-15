@@ -17,7 +17,7 @@ jobs:
     - name: Build Docker image
       run: |
         docker build -t odesair .
-        docker tag odesair ghcr.io/yzhelezko/odesair:latest
+        docker tag odesair ghcr.io/yzhelezko/odesair/odesair:latest
 
     - name: Login to GitHub Container Registry
       uses: docker/login-action@v1
@@ -27,4 +27,4 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Push Docker image
-      run: docker push ghcr.io/yzhelezko/odesair:latest
+      run: docker push ghcr.io/yzhelezko/odesair/odesair:latest
