@@ -30,7 +30,7 @@ func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSON
 
 	url := "https://api.openai.com/v1/chat/completions"
 	reqBody, err := json.Marshal(map[string]interface{}{
-		"model":           "gpt-4o",
+		"model":           "gpt-4o-mini",
 		"response_format": responseFormat{Type: "json_object"},
 		"messages": append([]Message{
 			{Role: "system", Content: c.SystemMessage + "\n Текущее время: " + time.Now().Format("15:04:05")},

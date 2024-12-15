@@ -26,6 +26,7 @@ import (
 const (
 	maxMessageHistory = 20
 	systemMessageFile = "system_message.txt"
+	sendToChannel     = "odesair"
 )
 
 func loadConfig() Config {
@@ -334,7 +335,7 @@ func handleAIInteraction(ctx context.Context, api *tg.Client, config Config, aiC
 		formattedResponse := formatAIResponse(aiResponse)
 		fmt.Println("Sending message to Telegram...")
 		if aiResponse.StatusChanged {
-			if err := sendToTelegram(ctx, api, "odesair", formattedResponse, !aiResponse.Danger); err != nil {
+			if err := sendToTelegram(ctx, api, sendToChannel, formattedResponse, !aiResponse.Danger); err != nil {
 				log.Printf("Error sending message to Telegram: %v", err)
 			}
 		} else {
