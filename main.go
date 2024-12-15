@@ -26,8 +26,9 @@ import (
 const (
 	maxMessageHistory = 20
 	systemMessageFile = "config/system_message.txt"
-	sendToChannel     = "odesair"
 )
+
+var sendToChannel = getEnv("SEND_TO_CHANNEL", "odesair")
 
 func loadConfig() Config {
 	appID, _ := strconv.Atoi(getEnv("APPID", ""))
@@ -46,8 +47,8 @@ func loadConfig() Config {
 		UpdateInterval:     5 * time.Second,
 		AIChoice:           getEnv("AI_CHOICE", "chatgpt"),
 		AIAPIKey:           getEnv("API_KEY", ""),
-		EnableTelegramSend: true,
-		IgnoreAirAttack:    false,
+		EnableTelegramSend: getEnv("ENABLE_TELEGRAM_SEND", "true") == "true",
+		IgnoreAirAttack:    getEnv("IGNORE_AIR_ATTACK", "false") == "true",
 	}
 }
 
