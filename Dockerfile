@@ -7,5 +7,4 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o odesair /app/
 
 FROM alpine
 COPY --from=build-stage /app/odesair /
-EXPOSE 8000
 CMD ["/odesair"]
