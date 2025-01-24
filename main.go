@@ -202,6 +202,8 @@ func updateAIClientSystemMessage(aiClient AIClient, newMessage string) {
 		c.SystemMessage = newMessage
 	case *ChatGPTClient:
 		c.SystemMessage = newMessage
+	case *DeepseekClient:
+		c.SystemMessage = newMessage
 	default:
 		log.Println("Unknown AI client type")
 	}
@@ -228,6 +230,14 @@ func initAIClient(config Config) (AIClient, error) {
 	case "chatgpt":
 		log.Println("Initializing ChatGPT client")
 		return &ChatGPTClient{
+			APIKey:         config.AIAPIKey,
+			HTTPClient:     &http.Client{},
+			SystemMessage:  systemMessage,
+			MessageHistory: []Message{},
+		}, nil
+	case "deepseek":
+		log.Println("Initializing Deepseek client")
+		return &DeepseekClient{
 			APIKey:         config.AIAPIKey,
 			HTTPClient:     &http.Client{},
 			SystemMessage:  systemMessage,
