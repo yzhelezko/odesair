@@ -500,15 +500,22 @@ func formatAIResponse(response AIJSONResponse) string {
 }
 
 func cleanString(input string) string {
-	// Regular expression to match:
-	// - numbers
-	// - Russian, Ukrainian, and English characters
-	// - spaces and newlines
-	// - common symbols
-	regex := regexp.MustCompile(`[^0-9a-zA-Zа-яА-ЯіІїЇєЄґҐ'\s!@#$%^&*()_+\-=\[\]{};:"\\|,.<>/?]+`)
+	// Preserve JSON structure while cleaning
+	regex := regexp.MustCompile(`[^\p{L}\p{N}\s!@#$%^&*()_+\-=\[\]{};:"'\\|,.<>/?«»—–€₴•]`)
 
-	// Replace all non-matching characters with an empty string
-	cleaned := regex.ReplaceAllString(input, "")
+	// Remove invalid characters but preserve JSON formatting
+	cleaned := regex.ReplaceAllStringFunc(input, func(m string) string {
+		// Allow basic JSON syntax characters
+		if strings.ContainsAny(m, "{}[]:,\"") {
+			return m
+		}
+		return ""
+	})
 
-	return cleaned
+	// Remove BOM characters if present
+	cleaned = strings.TrimPrefix(cleaned, "\ufeff")
+
+	// Normalize whitespace and trim
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	return strings.TrimSpace(cleaned)
 }

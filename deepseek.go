@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -68,20 +69,36 @@ func (c *DeepseekClient) SendMessage(ctx context.Context, message string) (AIJSO
 		return AIJSONResponse{}, err
 	}
 
+	// Handle UTF-8 BOM and clean response body
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+
 	var deepseekResp struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &deepseekResp); err != nil {
-		return AIJSONResponse{}, err
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 
+	if err := json.Unmarshal(body, &deepseekResp); err != nil {
+		return AIJSONResponse{}, fmt.Errorf("failed to parse API response: %w (body: %q)", err, string(body))
+	}
+
+	if len(deepseekResp.Choices) == 0 {
+		return AIJSONResponse{}, fmt.Errorf("no choices in response: %s", deepseekResp.Error.Message)
+	}
+
+	// Clean and parse the JSON content
+	content := strings.TrimSpace(deepseekResp.Choices[0].Message.Content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimSuffix(content, "```")
+
 	var aiResp AIJSONResponse
-	if err := json.Unmarshal([]byte(deepseekResp.Choices[0].Message.Content), &aiResp); err != nil {
-		return AIJSONResponse{}, err
+	if err := json.Unmarshal([]byte(content), &aiResp); err != nil {
+		return AIJSONResponse{}, fmt.Errorf("failed to parse AI response: %w (content: %q)", err, content)
 	}
 	c.AddMessageToHistory(Message{Role: "assistant", Content: fmt.Sprintf("%s Danger: %v StatusChanged: %v", aiResp.Text, aiResp.Danger, aiResp.StatusChanged)})
 	return aiResp, nil
