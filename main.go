@@ -103,6 +103,14 @@ type ChatGPTClient struct {
 	MessageHistory []Message
 }
 
+type OpenRouterClient struct {
+	APIKey         string
+	HTTPClient     *http.Client
+	SystemMessage  string
+	MessageHistory []Message
+}
+
+
 func main() {
 	config := loadConfig()
 
@@ -204,6 +212,8 @@ func updateAIClientSystemMessage(aiClient AIClient, newMessage string) {
 		c.SystemMessage = newMessage
 	case *DeepseekClient:
 		c.SystemMessage = newMessage
+	case *OpenRouterClient:
+		c.SystemMessage = newMessage
 	default:
 		log.Println("Unknown AI client type")
 	}
@@ -238,6 +248,14 @@ func initAIClient(config Config) (AIClient, error) {
 	case "deepseek":
 		log.Println("Initializing Deepseek client")
 		return &DeepseekClient{
+			APIKey:         config.AIAPIKey,
+			HTTPClient:     &http.Client{},
+			SystemMessage:  systemMessage,
+			MessageHistory: []Message{},
+		}, nil
+	case "openrouter":
+		log.Println("Initializing OpenRouter client")
+		return &OpenRouterClient{
 			APIKey:         config.AIAPIKey,
 			HTTPClient:     &http.Client{},
 			SystemMessage:  systemMessage,
