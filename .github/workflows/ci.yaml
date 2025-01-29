@@ -16,6 +16,15 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/yzhelezko/odesair/odesair
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
@@ -35,6 +44,4 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/yzhelezko/odesair/odesair:latest
-            ghcr.io/yzhelezko/odesair/odesair:${{ github.sha | slice(0, 7) }}
+          tags: ${{ steps.meta.outputs.tags }}
