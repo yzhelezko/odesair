@@ -28,7 +28,7 @@ const (
 	systemMessageFile = "config/system_message.txt"
 )
 
-var sendToChannel = getEnv("SEND_TO_CHANNEL", "odesair")
+var sendToChannel = getEnv("SEND_TO_CHANNEL", "odesairtest")
 
 func loadConfig() Config {
 	appID, _ := strconv.Atoi(getEnv("APPID", ""))
@@ -40,7 +40,7 @@ func loadConfig() Config {
 			{Identifier: "odessa_infonews", IsPrivate: false},
 			{Identifier: "xydessa_live", IsPrivate: false},
 			{Identifier: "freechat_odesa", IsPrivate: false},
-			// {Identifier: "odesairtest", IsPrivate: false},
+			{Identifier: "odesairxydessa", IsPrivate: false},
 		},
 		MessageLimit:       1,
 		SessionFilePath:    "config/tdlib-session",
@@ -48,7 +48,7 @@ func loadConfig() Config {
 		AIChoice:           getEnv("AI_CHOICE", "chatgpt"),
 		AIAPIKey:           getEnv("API_KEY", ""),
 		EnableTelegramSend: getEnv("ENABLE_TELEGRAM_SEND", "true") == "true",
-		IgnoreAirAttack:    getEnv("IGNORE_AIR_ATTACK", "false") == "true",
+		IgnoreAirAttack:    getEnv("IGNORE_AIR_ATTACK", "true") == "true",
 	}
 }
 
