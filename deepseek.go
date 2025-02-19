@@ -96,6 +96,10 @@ func (c *DeepseekClient) SendMessage(ctx context.Context, message string) (AIJSO
 	content = strings.TrimPrefix(content, "```json")
 	content = strings.TrimSuffix(content, "```")
 
+	if !strings.HasPrefix(content, "{") {
+		return AIJSONResponse{}, fmt.Errorf("unexpected response format, expected JSON object but got: %q", content)
+	}
+
 	var aiResp AIJSONResponse
 	if err := json.Unmarshal([]byte(content), &aiResp); err != nil {
 		return AIJSONResponse{}, fmt.Errorf("failed to parse AI response: %w (content: %q)", err, content)
