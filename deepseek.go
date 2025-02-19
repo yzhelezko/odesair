@@ -92,9 +92,7 @@ func (c *DeepseekClient) SendMessage(ctx context.Context, message string) (AIJSO
 	}
 
 	// Clean and parse the JSON content
-	content := strings.TrimSpace(deepseekResp.Choices[0].Message.Content)
-	content = strings.TrimPrefix(content, "```json")
-	content = strings.TrimSuffix(content, "```")
+	content := strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(deepseekResp.Choices[0].Message.Content, "```"), "```json"))
 
 	if !strings.HasPrefix(content, "{") {
 		return AIJSONResponse{}, fmt.Errorf("unexpected response format, expected JSON object but got: %q", content)
