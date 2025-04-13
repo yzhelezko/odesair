@@ -13,9 +13,10 @@ import (
 )
 
 const (
-    maxRetries = 30
-    baseDelay  = 1 * time.Second
+	maxRetries = 30
+	baseDelay  = 1 * time.Second
 )
+
 // NewOpenRouterClient is a constructor for an OpenRouter-based AI client.
 func NewOpenRouterClient(apiKey string, systemMessage string) *OpenRouterClient {
 	return &OpenRouterClient{
@@ -72,9 +73,8 @@ func (c *OpenRouterClient) SendMessage(ctx context.Context, userMessage string) 
 			time.Sleep(delay)
 		}
 
-
 		reqBody, err := json.Marshal(map[string]interface{}{
-			"model": "google/gemini-2.0-flash-exp:free",
+			"model": "google/gemini-2.5-pro-exp-03-25:free",
 			"messages": append(
 				[]Message{{
 					Role:    "system",

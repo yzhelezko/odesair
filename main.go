@@ -110,6 +110,12 @@ type OpenRouterClient struct {
 	MessageHistory []Message
 }
 
+type GeminiClient struct {
+	APIKey         string
+	HTTPClient     *http.Client
+	SystemMessage  string
+	MessageHistory []Message
+}
 
 func main() {
 	config := loadConfig()
@@ -214,6 +220,8 @@ func updateAIClientSystemMessage(aiClient AIClient, newMessage string) {
 		c.SystemMessage = newMessage
 	case *OpenRouterClient:
 		c.SystemMessage = newMessage
+	case *GeminiClient:
+		c.SystemMessage = newMessage
 	default:
 		log.Println("Unknown AI client type")
 	}
@@ -256,6 +264,14 @@ func initAIClient(config Config) (AIClient, error) {
 	case "openrouter":
 		log.Println("Initializing OpenRouter client")
 		return &OpenRouterClient{
+			APIKey:         config.AIAPIKey,
+			HTTPClient:     &http.Client{},
+			SystemMessage:  systemMessage,
+			MessageHistory: []Message{},
+		}, nil
+	case "gemini":
+		log.Println("Initializing Gemini client")
+		return &GeminiClient{
 			APIKey:         config.AIAPIKey,
 			HTTPClient:     &http.Client{},
 			SystemMessage:  systemMessage,
