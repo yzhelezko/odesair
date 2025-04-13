@@ -32,6 +32,12 @@ var sendToChannel = getEnv("SEND_TO_CHANNEL", "odesair")
 
 func loadConfig() Config {
 	appID, _ := strconv.Atoi(getEnv("APPID", ""))
+	aiInteractionIntervalStr := getEnv("AI_INTERACTION_INTERVAL", "30s")
+	aiInteractionInterval, err := time.ParseDuration(aiInteractionIntervalStr)
+	if err != nil {
+		log.Printf("Invalid AI_INTERACTION_INTERVAL duration '%s', using default 30s: %v", aiInteractionIntervalStr, err)
+		aiInteractionInterval = 30 * time.Second
+	}
 	return Config{
 		APIID:       appID,
 		APIHash:     getEnv("APPHASH", ""),
@@ -42,28 +48,30 @@ func loadConfig() Config {
 			{Identifier: "freechat_odesa", IsPrivate: false},
 			{Identifier: "odesairxydessa", IsPrivate: false},
 		},
-		MessageLimit:       1,
-		SessionFilePath:    "config/tdlib-session",
-		UpdateInterval:     5 * time.Second,
-		AIChoice:           getEnv("AI_CHOICE", "chatgpt"),
-		AIAPIKey:           getEnv("API_KEY", ""),
-		EnableTelegramSend: getEnv("ENABLE_TELEGRAM_SEND", "true") == "true",
-		IgnoreAirAttack:    getEnv("IGNORE_AIR_ATTACK", "false") == "true",
+		MessageLimit:          1,
+		SessionFilePath:       "config/tdlib-session",
+		UpdateInterval:        5 * time.Second,
+		AIChoice:              getEnv("AI_CHOICE", "chatgpt"),
+		AIAPIKey:              getEnv("API_KEY", ""),
+		EnableTelegramSend:    getEnv("ENABLE_TELEGRAM_SEND", "true") == "true",
+		IgnoreAirAttack:       getEnv("IGNORE_AIR_ATTACK", "false") == "true",
+		AIInteractionInterval: aiInteractionInterval,
 	}
 }
 
 type Config struct {
-	APIID              int
-	APIHash            string
-	PhoneNumber        string
-	Channels           []ChannelInfo
-	MessageLimit       int
-	SessionFilePath    string
-	UpdateInterval     time.Duration
-	AIChoice           string
-	AIAPIKey           string
-	EnableTelegramSend bool
-	IgnoreAirAttack    bool
+	APIID                 int
+	APIHash               string
+	PhoneNumber           string
+	Channels              []ChannelInfo
+	MessageLimit          int
+	SessionFilePath       string
+	UpdateInterval        time.Duration
+	AIChoice              string
+	AIAPIKey              string
+	EnableTelegramSend    bool
+	IgnoreAirAttack       bool
+	AIInteractionInterval time.Duration
 }
 
 type ChannelInfo struct {
@@ -295,30 +303,40 @@ func authenticateTelegram(ctx context.Context, client *telegram.Client, config C
 }
 
 func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClient AIClient) error {
-	ticker := time.NewTicker(config.UpdateInterval)
-	defer ticker.Stop()
+	// Ticker for fetching messages from Telegram
+	fetchTicker := time.NewTicker(config.UpdateInterval)
+	defer fetchTicker.Stop()
+
+	// Ticker for interacting with AI
+	aiTicker := time.NewTicker(config.AIInteractionInterval)
+	defer aiTicker.Stop()
 
 	var mu sync.Mutex
 	lastMessageIDs := make(map[string]int)
-	isFirstRun := true
+	messageBuffer := []string{} // Buffer to hold messages before sending to AI
+
+	log.Printf("Monitoring channels. UpdateInterval: %v, AIInteractionInterval: %v", config.UpdateInterval, config.AIInteractionInterval)
 
 	for {
 		select {
 		case <-ctx.Done():
+			log.Println("Context cancelled, stopping monitor loop.")
 			return ctx.Err()
-		case <-ticker.C:
+
+		case <-fetchTicker.C: // Fetch messages from Telegram
+			// Optional: Check air attack status if not ignored
 			if !config.IgnoreAirAttack {
 				isAirAttackActive, err := checkAirAttackStatus()
 				if err != nil {
 					log.Printf("Error checking air attack status: %v", err)
-					continue
+					continue // Skip this fetch cycle on error
 				}
 				if !isAirAttackActive {
 					continue
 				}
 			}
 
-			allMessages := []string{}
+			var newlyFetchedMessages []string
 			for _, channelInfo := range config.Channels {
 				messages, err := getMessages(ctx, api, channelInfo, config.MessageLimit)
 				if err != nil {
@@ -326,37 +344,47 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 					continue
 				}
 
-				mu.Lock()
+				mu.Lock() // Lock needed for lastMessageIDs access
 				newMessages := processNewMessages(channelInfo.Identifier, messages, lastMessageIDs)
 				mu.Unlock()
 
 				if len(newMessages) > 0 {
+					log.Printf("Found %d new messages from %s", len(newMessages), channelInfo.Identifier)
 					for _, msg := range newMessages {
-						msg = cleanString(msg)
-						if len(msg) > 0 {
-							allMessages = append(allMessages, fmt.Sprintf("Message from %s:\n%s", channelInfo.Identifier, msg))
+						cleanedMsg := cleanString(msg)
+						if len(cleanedMsg) > 0 {
+							newlyFetchedMessages = append(newlyFetchedMessages, fmt.Sprintf("Message from %s:\n%s", channelInfo.Identifier, cleanedMsg))
 						}
 					}
 				}
 			}
 
-			if len(allMessages) > 0 {
-				if isFirstRun {
-					mergedMessage := mergeMessages(allMessages)
-					if err := handleAIInteraction(ctx, api, config, aiClient, mergedMessage); err != nil {
-						log.Printf("Error handling AI interaction: %v", err)
-					}
-					isFirstRun = false
-				} else {
-					for _, msg := range allMessages {
-						msg = cleanString(msg)
-						if len(msg) > 0 {
-							if err := handleAIInteraction(ctx, api, config, aiClient, msg); err != nil {
-								log.Printf("Error handling AI interaction: %v", err)
-							}
-						}
-					}
-				}
+			// Add newly fetched messages to the buffer
+			if len(newlyFetchedMessages) > 0 {
+				mu.Lock()
+				messageBuffer = append(messageBuffer, newlyFetchedMessages...)
+				log.Printf("Added %d messages to buffer. Buffer size: %d", len(newlyFetchedMessages), len(messageBuffer))
+				mu.Unlock()
+			}
+
+		case <-aiTicker.C: // Time to interact with AI
+			mu.Lock()
+			if len(messageBuffer) == 0 {
+				mu.Unlock()
+				continue // No messages to send
+			}
+
+			log.Printf("AI interaction interval reached. Processing %d messages from buffer.", len(messageBuffer))
+			// Create a copy of the buffer to process and clear the original
+			messagesToSend := make([]string, len(messageBuffer))
+			copy(messagesToSend, messageBuffer)
+			messageBuffer = []string{} // Clear the buffer
+			mu.Unlock()
+
+			// Merge messages and send to AI
+			mergedMessage := mergeMessages(messagesToSend)
+			if err := handleAIInteraction(ctx, api, config, aiClient, mergedMessage); err != nil {
+				log.Printf("Error handling AI interaction: %v", err)
 			}
 		}
 	}
