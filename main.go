@@ -32,12 +32,20 @@ var sendToChannel = getEnv("SEND_TO_CHANNEL", "odesair")
 
 func loadConfig() Config {
 	appID, _ := strconv.Atoi(getEnv("APPID", ""))
-	aiInteractionIntervalStr := getEnv("AI_INTERACTION_INTERVAL", "30s")
-	aiInteractionInterval, err := time.ParseDuration(aiInteractionIntervalStr)
+	aiBatchIntervalStr := getEnv("AI_INTERACTION_INTERVAL", "30s")
+	aiBatchInterval, err := time.ParseDuration(aiBatchIntervalStr)
 	if err != nil {
-		log.Printf("Invalid AI_INTERACTION_INTERVAL duration '%s', using default 30s: %v", aiInteractionIntervalStr, err)
-		aiInteractionInterval = 30 * time.Second
+		log.Printf("Invalid AI_INTERACTION_INTERVAL duration '%s', using default 30s: %v", aiBatchIntervalStr, err)
+		aiBatchInterval = 30 * time.Second
 	}
+
+	aiBatchExtendDurationStr := getEnv("AI_BATCH_EXTEND_DURATION", "3s")
+	aiBatchExtendDuration, err := time.ParseDuration(aiBatchExtendDurationStr)
+	if err != nil {
+		log.Printf("Invalid AI_BATCH_EXTEND_DURATION duration '%s', using default 3s: %v", aiBatchExtendDurationStr, err)
+		aiBatchExtendDuration = 3 * time.Second
+	}
+
 	return Config{
 		APIID:       appID,
 		APIHash:     getEnv("APPHASH", ""),
@@ -55,7 +63,8 @@ func loadConfig() Config {
 		AIAPIKey:              getEnv("API_KEY", ""),
 		EnableTelegramSend:    getEnv("ENABLE_TELEGRAM_SEND", "true") == "true",
 		IgnoreAirAttack:       getEnv("IGNORE_AIR_ATTACK", "false") == "true",
-		AIInteractionInterval: aiInteractionInterval,
+		AIBatchInterval:       aiBatchInterval,
+		AIBatchExtendDuration: aiBatchExtendDuration,
 	}
 }
 
@@ -71,7 +80,8 @@ type Config struct {
 	AIAPIKey              string
 	EnableTelegramSend    bool
 	IgnoreAirAttack       bool
-	AIInteractionInterval time.Duration
+	AIBatchInterval       time.Duration
+	AIBatchExtendDuration time.Duration
 }
 
 type ChannelInfo struct {
@@ -307,15 +317,34 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 	fetchTicker := time.NewTicker(config.UpdateInterval)
 	defer fetchTicker.Stop()
 
-	// Ticker for interacting with AI
-	aiTicker := time.NewTicker(config.AIInteractionInterval)
-	defer aiTicker.Stop()
+	// Timer for triggering AI send after interval + extensions
+	var batchTimer *time.Timer
+	var batchTimerChan <-chan time.Time // Channel to select on, nil when timer is not active
+	var batchDeadline time.Time
 
 	var mu sync.Mutex
 	lastMessageIDs := make(map[string]int)
 	messageBuffer := []string{} // Buffer to hold messages before sending to AI
 
-	log.Printf("Monitoring channels. UpdateInterval: %v, AIInteractionInterval: %v", config.UpdateInterval, config.AIInteractionInterval)
+	log.Printf("Monitoring channels. UpdateInterval: %v, AIBatchInterval: %v, AIBatchExtendDuration: %v",
+		config.UpdateInterval, config.AIBatchInterval, config.AIBatchExtendDuration)
+
+	// Helper function to stop the timer safely
+	stopAndResetTimer := func() {
+		if batchTimer != nil {
+			if !batchTimer.Stop() {
+				// Drain channel if Stop() returns false
+				select {
+				case <-batchTimerChan:
+				default:
+				}
+			}
+		}
+		batchTimer = nil
+		batchTimerChan = nil
+		batchDeadline = time.Time{} // Reset deadline
+	}
+	defer stopAndResetTimer() // Ensure timer is stopped on exit
 
 	for {
 		select {
@@ -359,26 +388,58 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 				}
 			}
 
-			// Add newly fetched messages to the buffer
+			// Add newly fetched messages and manage the batch timer
 			if len(newlyFetchedMessages) > 0 {
 				mu.Lock()
 				messageBuffer = append(messageBuffer, newlyFetchedMessages...)
-				log.Printf("Added %d messages to buffer. Buffer size: %d", len(newlyFetchedMessages), len(messageBuffer))
+				log.Printf("Added %d messages to buffer. Buffer size: %d.", len(newlyFetchedMessages), len(messageBuffer))
+
+				var newTimerDuration time.Duration
+				if batchTimer == nil { // First message in a potential batch
+					newTimerDuration = config.AIBatchInterval
+					batchDeadline = time.Now().Add(newTimerDuration)
+					log.Printf("Starting batch timer (%v) for the first message. Deadline: %v", newTimerDuration, batchDeadline.Format(time.RFC3339))
+				} else { // Subsequent message, extend the deadline
+					// Stop the current timer before resetting
+					if !batchTimer.Stop() {
+						select {
+						case <-batchTimerChan:
+						default:
+						}
+					}
+					batchDeadline = batchDeadline.Add(config.AIBatchExtendDuration)
+					newTimerDuration = time.Until(batchDeadline)
+					log.Printf("Extending batch timer by %v. New deadline: %v (in %v)", config.AIBatchExtendDuration, batchDeadline.Format(time.RFC3339), newTimerDuration)
+				}
+
+				// Start/Reset the timer with the calculated duration
+				batchTimer = time.NewTimer(newTimerDuration)
+				batchTimerChan = batchTimer.C
+
 				mu.Unlock()
 			}
 
-		case <-aiTicker.C: // Time to interact with AI
+		case <-batchTimerChan: // Timer fired, batch deadline reached
 			mu.Lock()
 			if len(messageBuffer) == 0 {
+				batchTimer = nil
+				batchTimerChan = nil
+				batchDeadline = time.Time{}
 				mu.Unlock()
-				continue // No messages to send
+				continue
 			}
 
-			log.Printf("AI interaction interval reached. Processing %d messages from buffer.", len(messageBuffer))
+			log.Printf("Batch deadline reached (%v). Processing %d messages from buffer.", batchDeadline.Format(time.RFC3339), len(messageBuffer))
 			// Create a copy of the buffer to process and clear the original
 			messagesToSend := make([]string, len(messageBuffer))
 			copy(messagesToSend, messageBuffer)
 			messageBuffer = []string{} // Clear the buffer
+
+			// Important: Reset timer state *before* unlocking
+			batchTimer = nil
+			batchTimerChan = nil
+			batchDeadline = time.Time{}
+
 			mu.Unlock()
 
 			// Merge messages and send to AI
