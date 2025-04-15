@@ -64,17 +64,17 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	// log.Printf("Current History for Gemini (simplified): %v", contents)
 
 	// Generation Config (Optional - customize as needed)
-	generationConfig := map[string]interface{}{
-		"responseMimeType": "application/json", // Request JSON output
-		// "temperature": 0.7,
-		// "topP": 1.0,
-		// "topK": 40,
-		// "maxOutputTokens": 2048,
-	}
+	// generationConfig := map[string]interface{}{
+	// 	"responseMimeType": "application/json", // Request JSON output
+	// 	// "temperature": 0.7,
+	// 	// "topP": 1.0,
+	// 	// "topK": 40,
+	// 	// "maxOutputTokens": 2048,
+	// }
 
 	reqBodyMap := map[string]interface{}{
-		"contents":         contents,
-		"generationConfig": generationConfig,
+		"contents": contents,
+		// "generationConfig": generationConfig,
 		// Safety settings can be added here if needed
 	}
 
