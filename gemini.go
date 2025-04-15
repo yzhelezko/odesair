@@ -43,26 +43,65 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	// It uses a 'contents' array with 'parts'.
 	// Let's build the contents array from our history + system message.
 
-	// Start with the system message if present
 	var contents []map[string]interface{}
-	var userText string
+
+	// Track the last role to ensure alternating pattern
+	lastRole := ""
+
+	// Start with the system message if present
 	if c.SystemMessage != "" {
-		userText = c.SystemMessage + "\n\n" + message // Combine system and first user message
-	} else {
-		userText = message
+		// Add system message as a user message
+		contents = append(contents, map[string]interface{}{
+			"role": "user",
+			"parts": []map[string]string{
+				{"text": c.SystemMessage},
+			},
+		})
+		lastRole = "user"
 	}
 
-	contents = append(contents, map[string]interface{}{
-		"role": "user",
-		"parts": []map[string]string{
-			{"text": userText},
-		},
-	})
+	// Add historical messages
+	for _, msg := range c.MessageHistory {
+		// Map our roles to Gemini's roles (user, model)
+		role := msg.Role
+		if role == "assistant" {
+			role = "model"
+		}
 
-	// Add historical messages (Needs careful adaptation for Gemini's alternating roles)
-	// This basic implementation sends only the system prompt + current message.
-	// A full implementation would need to map our history to Gemini's format.
-	// log.Printf("Current History for Gemini (simplified): %v", contents)
+		// Ensure alternating pattern - skip message if same role repeats
+		if lastRole == role {
+			log.Printf("Warning: Skipping consecutive %s message to maintain alternating pattern", role)
+			continue
+		}
+
+		contents = append(contents, map[string]interface{}{
+			"role": role,
+			"parts": []map[string]string{
+				{"text": msg.Content},
+			},
+		})
+		lastRole = role
+	}
+
+	// Add the current message if needed
+	if lastRole != "user" {
+		// Add the current message
+		contents = append(contents, map[string]interface{}{
+			"role": "user",
+			"parts": []map[string]string{
+				{"text": message},
+			},
+		})
+	} else {
+		// If the last message was already from user, combine with current message
+		lastIdx := len(contents) - 1
+		lastContent := contents[lastIdx]["parts"].([]map[string]string)[0]["text"]
+		contents[lastIdx]["parts"] = []map[string]string{
+			{"text": lastContent + "\n\n" + message},
+		}
+	}
+
+	log.Printf("Sending message history to Gemini with %d messages", len(contents))
 
 	// Generation Config (Optional - customize as needed)
 	// generationConfig := map[string]interface{}{
