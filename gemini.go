@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // AddMessageToHistory adds a message to the client's history, maintaining max history size.
@@ -26,6 +27,9 @@ func (c *GeminiClient) GetMessageHistory() []Message {
 
 // SendMessage sends the current message history to the Gemini API and returns the AI's response.
 func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
+	// Add user message to history at the beginning
+	c.AddMessageToHistory(Message{Role: "user", Content: message})
+
 	// Note: Adjust the model name as needed (e.g., "gemini-1.5-flash-latest", "gemini-1.5-pro-latest")
 	// See https://ai.google.dev/gemini-api/docs/models/gemini
 	// model := "gemini-2.5-pro-exp-03-25"
@@ -33,45 +37,26 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, c.APIKey)
 
 	// Construct Gemini API request payload
-	// Gemini API expects alternating user/model roles.
-	// We'll need to potentially adapt our history format or filter it.
-	// For simplicity, let's combine the system message and the user message for now.
-	// A more robust implementation would handle history conversion correctly.
-
-	// Combine system message and user message into the prompt structure
-	// Note: The Gemini API structure differs from Claude/OpenAI.
-	// It uses a 'contents' array with 'parts'.
-	// Let's build the contents array from our history + system message.
+	// Gemini API expects alternating user/model roles
 
 	var contents []map[string]interface{}
 
-	// Track the last role to ensure alternating pattern
-	lastRole := ""
-
-	// Start with the system message if present
+	// Start with system message if present
 	if c.SystemMessage != "" {
-		// Add system message as a user message
 		contents = append(contents, map[string]interface{}{
 			"role": "user",
 			"parts": []map[string]string{
-				{"text": c.SystemMessage},
+				{"text": c.SystemMessage + "\n Текущее время: " + time.Now().Format("15:04:05")},
 			},
 		})
-		lastRole = "user"
 	}
 
 	// Add historical messages
 	for _, msg := range c.MessageHistory {
-		// Map our roles to Gemini's roles (user, model)
+		// Map our roles to Gemini's roles (user and model)
 		role := msg.Role
 		if role == "assistant" {
 			role = "model"
-		}
-
-		// Ensure alternating pattern - skip message if same role repeats
-		if lastRole == role {
-			log.Printf("Warning: Skipping consecutive %s message to maintain alternating pattern", role)
-			continue
 		}
 
 		contents = append(contents, map[string]interface{}{
@@ -80,42 +65,13 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 				{"text": msg.Content},
 			},
 		})
-		lastRole = role
-	}
-
-	// Add the current message if needed
-	if lastRole != "user" {
-		// Add the current message
-		contents = append(contents, map[string]interface{}{
-			"role": "user",
-			"parts": []map[string]string{
-				{"text": message},
-			},
-		})
-	} else {
-		// If the last message was already from user, combine with current message
-		lastIdx := len(contents) - 1
-		lastContent := contents[lastIdx]["parts"].([]map[string]string)[0]["text"]
-		contents[lastIdx]["parts"] = []map[string]string{
-			{"text": lastContent + "\n\n" + message},
-		}
 	}
 
 	log.Printf("Sending message history to Gemini with %d messages", len(contents))
 
-	// Generation Config (Optional - customize as needed)
-	// generationConfig := map[string]interface{}{
-	// 	"responseMimeType": "application/json", // Request JSON output
-	// 	// "temperature": 0.7,
-	// 	// "topP": 1.0,
-	// 	// "topK": 40,
-	// 	// "maxOutputTokens": 2048,
-	// }
-
 	reqBodyMap := map[string]interface{}{
 		"contents": contents,
 		// "generationConfig": generationConfig,
-		// Safety settings can be added here if needed
 	}
 
 	reqBody, err := json.Marshal(reqBodyMap)
@@ -197,12 +153,19 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 			return AIJSONResponse{}, fmt.Errorf("failed to unmarshal inner JSON from gemini response: %w. Content was: %s", err, responseText)
 		}
 
-		// Add the successful AI response to history (as 'model')
-		c.AddMessageToHistory(Message{Role: "model", Content: responseText}) // Store the JSON string
+		// Add the successful AI response to history (as 'model') - matching ChatGPT implementation format
+		c.AddMessageToHistory(Message{Role: "assistant", Content: fmt.Sprintf("%s Danger: %v StatusChanged: %v", aiResp.Text, aiResp.Danger, aiResp.StatusChanged)})
 
 		return aiResp, nil
 	}
 
 	log.Printf("No valid content found in Gemini response: %+v", geminiResp)
 	return AIJSONResponse{}, fmt.Errorf("no valid content found in gemini response")
+}
+
+func getContentPreview(content string, maxLength int) string {
+	if len(content) <= maxLength {
+		return content
+	}
+	return content[:maxLength] + "..."
 }
