@@ -143,6 +143,7 @@ func (c *OpenRouterClient) SendMessage(ctx context.Context, userMessage string) 
 		// Clean and parse the content
 		content = strings.TrimSpace(content)
 		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimPrefix(content, "```yaml")
 		content = strings.TrimPrefix(content, "```")
 		content = strings.TrimSuffix(content, "```")
 		content = strings.TrimSpace(content)

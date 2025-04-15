@@ -96,10 +96,10 @@ type AIClient interface {
 }
 
 type AIJSONResponse struct {
-	Text          string `json:"text"`
-	Principle     string `json:"principle"`
-	Danger        bool   `json:"danger"`
-	StatusChanged bool   `json:"statusChanged"`
+	Text          string `json:"text" yaml:"text"`
+	Principle     string `json:"principle" yaml:"principle"`
+	Danger        bool   `json:"danger" yaml:"danger"`
+	StatusChanged bool   `json:"statusChanged" yaml:"statusChanged"`
 }
 
 type Message struct {

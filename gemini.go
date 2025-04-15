@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strings"
 )
 
 // AddMessageToHistory adds a message to the client's history, maintaining max history size.
@@ -140,6 +141,14 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
 		responseText := geminiResp.Candidates[0].Content.Parts[0].Text
 		log.Printf("Gemini Response Text (before JSON parse): %s", responseText) // Log the text part
+
+		// Clean and parse the content
+		responseText = strings.TrimSpace(responseText)
+		responseText = strings.TrimPrefix(responseText, "```json")
+		responseText = strings.TrimPrefix(responseText, "```yaml")
+		responseText = strings.TrimPrefix(responseText, "```")
+		responseText = strings.TrimSuffix(responseText, "```")
+		responseText = strings.TrimSpace(responseText)
 
 		var aiResp AIJSONResponse
 		// The response text itself should be the JSON string we expect
