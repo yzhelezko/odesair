@@ -33,7 +33,7 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	// Note: Adjust the model name as needed (e.g., "gemini-1.5-flash-latest", "gemini-1.5-pro-latest")
 	// See https://ai.google.dev/gemini-api/docs/models/gemini
 	// model := "gemini-2.5-pro-exp-03-25"
-	model := "gemini-2.0-flash-thinking-exp-01-21"
+	model := "gemini-2.5-flash-preview-04-17"
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, c.APIKey)
 
 	// Construct Gemini API request payload
