@@ -81,13 +81,13 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	// Configure thinking budget (value between 0-24576)
 	// 0 = disabled, 1-1024 will be set to 1024
 	thinkingConfig := map[string]interface{}{
-		"thinkingBudget": 1024, // Default thinking budget
+		"thinking_budget": 1024, // Default thinking budget
 	}
 
 	reqBodyMap := map[string]interface{}{
-		"contents":         contents,
-		"generationConfig": generationConfig,
-		"thinkingConfig":   thinkingConfig,
+		"contents":          contents,
+		"generation_config": generationConfig,
+		"thinking_config":   thinkingConfig,
 	}
 
 	reqBody, err := json.Marshal(reqBodyMap)
