@@ -72,11 +72,11 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	// Configure thinking budget (value between 0-24576)
 	// 0 = disabled, 1-1024 will be set to 1024
 	thinkingConfig := map[string]interface{}{
-		"thinkingBudget": 1024, // Default thinking budget
+		"thinkingBudget": 2048, // Default thinking budget
 	}
 
 	// Main request configuration
-	config := map[string]interface{}{
+	generationConfig := map[string]interface{}{
 		"thinkingConfig": thinkingConfig,
 		// Other config options can go here
 		// "temperature": 0.7,
@@ -86,8 +86,8 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	}
 
 	reqBodyMap := map[string]interface{}{
-		"contents": contents,
-		"config":   config,
+		"contents":         contents,
+		"generationConfig": generationConfig,
 	}
 
 	reqBody, err := json.Marshal(reqBodyMap)
@@ -177,11 +177,4 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 
 	log.Printf("No valid content found in Gemini response: %+v", geminiResp)
 	return AIJSONResponse{}, fmt.Errorf("no valid content found in gemini response")
-}
-
-func getContentPreview(content string, maxLength int) string {
-	if len(content) <= maxLength {
-		return content
-	}
-	return content[:maxLength] + "..."
 }

@@ -4,9 +4,7 @@ go 1.22.2
 
 require (
 	github.com/fsnotify/fsnotify v1.7.0
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/gotd/td v0.105.0
-	golang.org/x/xerrors v0.0.0-20240716161551-93cc26a95ae9
 )
 
 require (
