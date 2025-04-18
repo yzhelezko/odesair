@@ -69,25 +69,25 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 
 	log.Printf("Sending message history to Gemini with %d messages", len(contents))
 
-	// Generation Config with thinking mode configuration
-	generationConfig := map[string]interface{}{
-		// "responseMimeType": "application/json", // Request JSON output
+	// Configure thinking budget (value between 0-24576)
+	// 0 = disabled, 1-1024 will be set to 1024
+	thinkingConfig := map[string]interface{}{
+		"thinkingBudget": 1024, // Default thinking budget
+	}
+
+	// Main request configuration
+	config := map[string]interface{}{
+		"thinkingConfig": thinkingConfig,
+		// Other config options can go here
 		// "temperature": 0.7,
 		// "topP": 1.0,
 		// "topK": 40,
 		// "maxOutputTokens": 2048,
 	}
 
-	// Configure thinking budget (value between 0-24576)
-	// 0 = disabled, 1-1024 will be set to 1024
-	thinkingConfig := map[string]interface{}{
-		"thinking_budget": 1024, // Default thinking budget
-	}
-
 	reqBodyMap := map[string]interface{}{
-		"contents":          contents,
-		"generation_config": generationConfig,
-		"thinking_config":   thinkingConfig,
+		"contents": contents,
+		"config":   config,
 	}
 
 	reqBody, err := json.Marshal(reqBodyMap)
