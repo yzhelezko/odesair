@@ -393,7 +393,15 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 				}
 
 				if len(newMessages) > 0 {
-					log.Printf("Found %d new messages from %s", len(newMessages), channelInfo.Identifier)
+					imageCount := 0
+					for _, msg := range newMessages {
+						imageCount += len(msg.Images)
+					}
+					if imageCount > 0 {
+						log.Printf("Found %d new messages from %s [%d image(s)]", len(newMessages), channelInfo.Identifier, imageCount)
+					} else {
+						log.Printf("Found %d new messages from %s", len(newMessages), channelInfo.Identifier)
+					}
 					for _, msg := range newMessages {
 						cleanedMsg := cleanString(msg.Content)
 						if len(cleanedMsg) > 0 || len(msg.Images) > 0 {
@@ -409,7 +417,15 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 			if len(newlyFetchedMessages) > 0 {
 				mu.Lock()
 				messageBuffer = append(messageBuffer, newlyFetchedMessages...)
-				log.Printf("Added %d messages to buffer. Buffer size: %d.", len(newlyFetchedMessages), len(messageBuffer))
+				bufferImageCount := 0
+				for _, msg := range messageBuffer {
+					bufferImageCount += len(msg.Images)
+				}
+				if bufferImageCount > 0 {
+					log.Printf("Added %d messages to buffer. Buffer size: %d [%d image(s)]", len(newlyFetchedMessages), len(messageBuffer), bufferImageCount)
+				} else {
+					log.Printf("Added %d messages to buffer. Buffer size: %d", len(newlyFetchedMessages), len(messageBuffer))
+				}
 
 				var newTimerDuration time.Duration
 				if batchTimer == nil { // First message in a potential batch
@@ -446,7 +462,15 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 				continue
 			}
 
-			log.Printf("Batch deadline reached (%v). Processing %d messages from buffer.", batchDeadline.Format(time.RFC3339), len(messageBuffer))
+			batchImageCount := 0
+			for _, msg := range messageBuffer {
+				batchImageCount += len(msg.Images)
+			}
+			if batchImageCount > 0 {
+				log.Printf("Batch deadline reached (%v). Processing %d messages [%d image(s)] from buffer.", batchDeadline.Format(time.RFC3339), len(messageBuffer), batchImageCount)
+			} else {
+				log.Printf("Batch deadline reached (%v). Processing %d messages from buffer.", batchDeadline.Format(time.RFC3339), len(messageBuffer))
+			}
 			// Create a copy of the buffer to process and clear the original
 			messagesToSend := make([]Message, len(messageBuffer))
 			copy(messagesToSend, messageBuffer)
@@ -468,14 +492,23 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 	}
 }
 
+func formatMessageForLog(msg Message) string {
+	content := msg.Content
+	if len(msg.Images) > 0 {
+		content = fmt.Sprintf("[%d image(s)] %s", len(msg.Images), content)
+	}
+	return content
+}
+
 func handleAIInteraction(ctx context.Context, api *tg.Client, config Config, aiClient AIClient, message Message) error {
 	messages := aiClient.GetMessageHistory()
 	fmt.Println("----------------------------------------------------")
-	fmt.Println("MESSAGE HISTORY: ", messages)
+	fmt.Println("MESSAGE HISTORY:")
+	for i, msg := range messages {
+		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, formatMessageForLog(msg))
+	}
 	fmt.Println("----------------------------------------------------")
-	fmt.Println("----------------------------------------------------")
-	fmt.Println("LAST MESSAGE CONTENT: ", message.Content)
-	fmt.Printf("LAST MESSAGE IMAGES: %d\n", len(message.Images))
+	fmt.Printf("LAST MESSAGE: %s\n", formatMessageForLog(message))
 	
 	// Clean the text content but keep images
 	message.Content = cleanString(message.Content)
@@ -580,6 +613,72 @@ func getMessages(ctx context.Context, api *tg.Client, channelInfo ChannelInfo, l
 	}
 }
 
+// detectMIMEType detects the MIME type from image bytes
+func detectMIMEType(data []byte) string {
+	if len(data) < 8 {
+		return "image/jpeg" // fallback
+	}
+
+	// Check magic bytes
+	// JPEG: FF D8 FF
+	if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return "image/jpeg"
+	}
+	// PNG: 89 50 4E 47 0D 0A 1A 0A
+	if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
+		return "image/png"
+	}
+	// GIF: 47 49 46 38
+	if data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38 {
+		return "image/gif"
+	}
+	// WebP: 52 49 46 46 ... 57 45 42 50
+	if len(data) >= 12 && data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
+		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50 {
+		return "image/webp"
+	}
+
+	return "image/jpeg" // fallback to JPEG
+}
+
+// downloadImageWithRetry attempts to download an image with retries and fallback thumb sizes
+func downloadImageWithRetry(ctx context.Context, api *tg.Client, dl *downloader.Downloader, photo *tg.Photo, msgID int, maxRetries int) (Image, error) {
+	thumbSizes := []string{"w", "y", "x", "m", "s"} // Try from largest to smallest
+
+	var lastErr error
+	for _, thumbSize := range thumbSizes {
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			var buf bytes.Buffer
+			_, err := dl.Download(api, &tg.InputPhotoFileLocation{
+				ID:            photo.ID,
+				AccessHash:    photo.AccessHash,
+				FileReference: photo.FileReference,
+				ThumbSize:     thumbSize,
+			}).Stream(ctx, &buf)
+
+			if err == nil {
+				data := buf.Bytes()
+				mimeType := detectMIMEType(data)
+				log.Printf("Downloaded image from message %d (size: %s, %d bytes, %s)", msgID, thumbSize, len(data), mimeType)
+				return Image{
+					Data:     data,
+					MIMEType: mimeType,
+				}, nil
+			}
+
+			lastErr = err
+			if attempt < maxRetries {
+				log.Printf("Retry %d/%d downloading image from message %d (size: %s): %v", attempt, maxRetries, msgID, thumbSize, err)
+				time.Sleep(time.Duration(attempt*500) * time.Millisecond) // exponential backoff
+			}
+		}
+		// If all retries failed for this size, try next size
+	}
+
+	log.Printf("Failed to download image from message %d after all retries: %v", msgID, lastErr)
+	return Image{}, lastErr
+}
+
 func processNewMessages(ctx context.Context, api *tg.Client, dl *downloader.Downloader, channelID string, messages []tg.MessageClass, lastMessageIDs map[string]int) ([]Message, error) {
 	var newMessages []Message
 	latestMessageID := lastMessageIDs[channelID]
@@ -601,24 +700,8 @@ func processNewMessages(ctx context.Context, api *tg.Client, dl *downloader.Down
 			// Check for media
 			if media, ok := msg.Media.(*tg.MessageMediaPhoto); ok {
 				if photo, ok := media.Photo.(*tg.Photo); ok {
-					// Download photo
-					var buf bytes.Buffer
-					_, err := dl.Download(api, &tg.InputPhotoFileLocation{
-						ID:            photo.ID,
-						AccessHash:    photo.AccessHash,
-						FileReference: photo.FileReference,
-						ThumbSize:     "w", // Largest size usually, or try "y" or check sizes
-					}).Stream(ctx, &buf)
-
-					if err == nil {
-						images = append(images, Image{
-							Data:     buf.Bytes(),
-							MIMEType: "image/jpeg", // Assume JPEG for Telegram photos
-						})
-						log.Printf("Downloaded image from message %d", msg.ID)
-					} else {
-						// Fallback to "x" or "y" if "w" fails? Or just log
-						log.Printf("Failed to download image: %v", err)
+					if img, err := downloadImageWithRetry(ctx, api, dl, photo, msg.ID, 3); err == nil {
+						images = append(images, img)
 					}
 				}
 			}
