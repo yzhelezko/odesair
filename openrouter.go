@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,58 +14,39 @@ import (
 )
 
 const (
-	maxRetries = 30
-	baseDelay  = 1 * time.Second
+	maxRetries = 3
+	baseDelay  = 2 * time.Second
 )
 
-// NewOpenRouterClient is a constructor for an OpenRouter-based AI client.
-func NewOpenRouterClient(apiKey string, systemMessage string) *OpenRouterClient {
-	return &OpenRouterClient{
-		APIKey:        apiKey,
-		SystemMessage: systemMessage,
-		HTTPClient:    &http.Client{}, // You can customize your HTTP client as needed.
-	}
+type OpenRouterResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error struct {
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
-// AddMessageToHistory implements AIClient.AddMessageToHistory
+// AddMessageToHistory adds a message to the client's history, maintaining max history size.
 func (c *OpenRouterClient) AddMessageToHistory(message Message) {
 	c.MessageHistory = append(c.MessageHistory, message)
 	if len(c.MessageHistory) > maxMessageHistory {
-		c.MessageHistory = c.MessageHistory[1:]
+		c.MessageHistory = c.MessageHistory[1:] // Remove the oldest message
 	}
 }
 
-// GetMessageHistory implements AIClient.GetMessageHistory
+// GetMessageHistory returns the current message history.
 func (c *OpenRouterClient) GetMessageHistory() []Message {
 	return c.MessageHistory
 }
 
-// OpenRouterResponse represents the structure of the OpenRouter API response
-type OpenRouterResponse struct {
-	ID       string `json:"id"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Choices  []struct {
-		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Error *struct {
-		Message  string `json:"message"`
-		Code     int    `json:"code"`
-		Metadata struct {
-			Raw          string `json:"raw"`
-			ProviderName string `json:"provider_name"`
-		} `json:"metadata"`
-	} `json:"error"`
-}
-
 // SendMessage implements AIClient.SendMessage for openrouter.ai
-func (c *OpenRouterClient) SendMessage(ctx context.Context, userMessage string) (AIJSONResponse, error) {
+func (c *OpenRouterClient) SendMessage(ctx context.Context, message Message) (AIJSONResponse, error) {
 	var lastError error
 	// Add message to history
-	c.AddMessageToHistory(Message{Role: "user", Content: userMessage})
+	c.AddMessageToHistory(message)
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
@@ -73,15 +55,52 @@ func (c *OpenRouterClient) SendMessage(ctx context.Context, userMessage string) 
 			time.Sleep(delay)
 		}
 
+		var apiMessages []map[string]interface{}
+
+		// System message
+		apiMessages = append(apiMessages, map[string]interface{}{
+			"role":    "system",
+			"content": c.SystemMessage + "\nCurrent time: " + time.Now().Format("15:04:05"),
+		})
+
+		// History messages
+		for _, msg := range c.MessageHistory {
+			if len(msg.Images) > 0 {
+				var contentParts []map[string]interface{}
+				
+				// Add text
+				if msg.Content != "" {
+					contentParts = append(contentParts, map[string]interface{}{
+						"type": "text",
+						"text": msg.Content,
+					})
+				}
+
+				// Add images
+				for _, img := range msg.Images {
+					contentParts = append(contentParts, map[string]interface{}{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:%s;base64,%s", img.MIMEType, base64.StdEncoding.EncodeToString(img.Data)),
+						},
+					})
+				}
+
+				apiMessages = append(apiMessages, map[string]interface{}{
+					"role":    msg.Role,
+					"content": contentParts,
+				})
+			} else {
+				apiMessages = append(apiMessages, map[string]interface{}{
+					"role":    msg.Role,
+					"content": msg.Content,
+				})
+			}
+		}
+
 		reqBody, err := json.Marshal(map[string]interface{}{
-			"model": "google/gemini-2.5-pro-exp-03-25:free",
-			"messages": append(
-				[]Message{{
-					Role:    "system",
-					Content: c.SystemMessage + "\nCurrent time: " + time.Now().Format("15:04:05"),
-				}},
-				c.MessageHistory...,
-			),
+			"model":    "google/gemini-2.5-pro-exp-03-25:free",
+			"messages": apiMessages,
 		})
 		if err != nil {
 			return AIJSONResponse{}, fmt.Errorf("marshaling request error: %w", err)
@@ -118,49 +137,38 @@ func (c *OpenRouterClient) SendMessage(ctx context.Context, userMessage string) 
 		// Parse OpenRouter response
 		var openRouterResp OpenRouterResponse
 		if err := json.Unmarshal(body, &openRouterResp); err != nil {
-			lastError = fmt.Errorf("parsing OpenRouter response error: %w", err)
+			lastError = fmt.Errorf("parsing response error: %w, body: %s", err, string(body))
 			continue
 		}
 
-		// Check for OpenRouter error response
-		if openRouterResp.Error != nil {
-			errMsg := fmt.Sprintf("OpenRouter error (code %d): %s", openRouterResp.Error.Code, openRouterResp.Error.Message)
-			if openRouterResp.Error.Metadata.Raw != "" {
-				errMsg += fmt.Sprintf(" - Provider error: %s", openRouterResp.Error.Metadata.Raw)
-			}
-			lastError = fmt.Errorf(errMsg)
-			continue // Always retry on error responses
+		if openRouterResp.Error.Message != "" {
+			lastError = fmt.Errorf("api error: %s", openRouterResp.Error.Message)
+			continue
 		}
 
-		// If we get here, we have a successful response, try to parse it
 		if len(openRouterResp.Choices) == 0 {
-			lastError = fmt.Errorf("no choices in response")
+			lastError = fmt.Errorf("empty choices in response")
 			continue
 		}
 
 		content := openRouterResp.Choices[0].Message.Content
-
-		// Clean and parse the content
+		
+		// Clean content
 		content = strings.TrimSpace(content)
 		content = strings.TrimPrefix(content, "```json")
-		content = strings.TrimPrefix(content, "```yaml")
 		content = strings.TrimPrefix(content, "```")
 		content = strings.TrimSuffix(content, "```")
 		content = strings.TrimSpace(content)
 
-		// Parse the actual AIJSONResponse from the content
-		var result AIJSONResponse
-		if err := json.Unmarshal([]byte(content), &result); err != nil {
-			lastError = fmt.Errorf("parsing AI response error: %w\nContent: %s", err, content)
+		var aiResp AIJSONResponse
+		if err := json.Unmarshal([]byte(content), &aiResp); err != nil {
+			lastError = fmt.Errorf("parsing ai response error: %w, content: %s", err, content)
 			continue
 		}
 
-		// Success! Add to message history and return immediately
-		assistantMsg := fmt.Sprintf("%s (Principle: %s, Danger: %v, StatusChanged: %v)",
-			result.Text, result.Principle, result.Danger, result.StatusChanged)
-		c.AddMessageToHistory(Message{Role: "assistant", Content: assistantMsg})
-		return result, nil
+		c.AddMessageToHistory(Message{Role: "assistant", Content: fmt.Sprintf("%s Danger: %v StatusChanged: %v", aiResp.Text, aiResp.Danger, aiResp.StatusChanged)})
+		return aiResp, nil
 	}
 
-	return AIJSONResponse{}, fmt.Errorf("max retries exceeded, last error: %v", lastError)
+	return AIJSONResponse{}, fmt.Errorf("failed after %d retries: %w", maxRetries, lastError)
 }

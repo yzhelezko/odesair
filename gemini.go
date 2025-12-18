@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -26,14 +26,14 @@ func (c *GeminiClient) GetMessageHistory() []Message {
 }
 
 // SendMessage sends the current message history to the Gemini API and returns the AI's response.
-func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
+func (c *GeminiClient) SendMessage(ctx context.Context, message Message) (AIJSONResponse, error) {
 	// Add user message to history at the beginning
-	c.AddMessageToHistory(Message{Role: "user", Content: message})
+	c.AddMessageToHistory(message)
 
 	// Note: Adjust the model name as needed (e.g., "gemini-1.5-flash-latest", "gemini-1.5-pro-latest")
 	// See https://ai.google.dev/gemini-api/docs/models/gemini
 	// model := "gemini-2.5-pro-exp-03-25"
-	model := "gemini-2.5-flash"
+	model := "gemini-3-flash-preview"
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, c.APIKey)
 
 	// Construct Gemini API request payload
@@ -45,7 +45,7 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	if c.SystemMessage != "" {
 		contents = append(contents, map[string]interface{}{
 			"role": "user",
-			"parts": []map[string]string{
+			"parts": []map[string]interface{}{
 				{"text": c.SystemMessage + "\n Текущее время: " + time.Now().Format("15:04:05")},
 			},
 		})
@@ -59,12 +59,31 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 			role = "model"
 		}
 
-		contents = append(contents, map[string]interface{}{
-			"role": role,
-			"parts": []map[string]string{
-				{"text": msg.Content},
-			},
-		})
+		var parts []map[string]interface{}
+
+		// Add text content
+		if msg.Content != "" {
+			parts = append(parts, map[string]interface{}{
+				"text": msg.Content,
+			})
+		}
+
+		// Add images
+		for _, img := range msg.Images {
+			parts = append(parts, map[string]interface{}{
+				"inline_data": map[string]interface{}{
+					"mime_type": img.MIMEType,
+					"data":      img.Data, // json.Marshal will automatically base64 encode []byte
+				},
+			})
+		}
+
+		if len(parts) > 0 {
+			contents = append(contents, map[string]interface{}{
+				"role":  role,
+				"parts": parts,
+			})
+		}
 	}
 
 	log.Printf("Sending message history to Gemini with %d messages", len(contents))
@@ -95,7 +114,7 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 		return AIJSONResponse{}, fmt.Errorf("failed to marshal gemini request body: %w", err)
 	}
 
-	log.Printf("Gemini Request Body: %s", string(reqBody)) // Log the request body for debugging
+	// log.Printf("Gemini Request Body: %s", string(reqBody)) // Log the request body for debugging (be careful with large images)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
 	if err != nil {
@@ -110,7 +129,7 @@ func (c *GeminiClient) SendMessage(ctx context.Context, message string) (AIJSONR
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return AIJSONResponse{}, fmt.Errorf("failed to read gemini response body: %w", err)
 	}

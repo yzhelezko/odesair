@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/tg"
 )
 
@@ -90,7 +92,7 @@ type ChannelInfo struct {
 }
 
 type AIClient interface {
-	SendMessage(ctx context.Context, message string) (AIJSONResponse, error)
+	SendMessage(ctx context.Context, message Message) (AIJSONResponse, error)
 	AddMessageToHistory(message Message)
 	GetMessageHistory() []Message
 }
@@ -102,9 +104,15 @@ type AIJSONResponse struct {
 	StatusChanged bool   `json:"statusChanged" yaml:"statusChanged"`
 }
 
+type Image struct {
+	Data     []byte
+	MIMEType string
+}
+
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string  `json:"role"`
+	Content string  `json:"content"`
+	Images  []Image `json:"-"`
 }
 
 type ClaudeClient struct {
@@ -324,7 +332,10 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 
 	var mu sync.Mutex
 	lastMessageIDs := make(map[string]int)
-	messageBuffer := []string{} // Buffer to hold messages before sending to AI
+	messageBuffer := []Message{} // Buffer to hold messages before sending to AI
+
+	// Initialize downloader
+	dl := downloader.NewDownloader()
 
 	log.Printf("Monitoring channels. UpdateInterval: %v, AIBatchInterval: %v, AIBatchExtendDuration: %v",
 		config.UpdateInterval, config.AIBatchInterval, config.AIBatchExtendDuration)
@@ -365,7 +376,7 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 				}
 			}
 
-			var newlyFetchedMessages []string
+			var newlyFetchedMessages []Message
 			for _, channelInfo := range config.Channels {
 				messages, err := getMessages(ctx, api, channelInfo, config.MessageLimit)
 				if err != nil {
@@ -374,15 +385,21 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 				}
 
 				mu.Lock() // Lock needed for lastMessageIDs access
-				newMessages := processNewMessages(channelInfo.Identifier, messages, lastMessageIDs)
+				newMessages, err := processNewMessages(ctx, api, dl, channelInfo.Identifier, messages, lastMessageIDs)
 				mu.Unlock()
+
+				if err != nil {
+					log.Printf("Error processing messages for %s: %v", channelInfo.Identifier, err)
+				}
 
 				if len(newMessages) > 0 {
 					log.Printf("Found %d new messages from %s", len(newMessages), channelInfo.Identifier)
 					for _, msg := range newMessages {
-						cleanedMsg := cleanString(msg)
-						if len(cleanedMsg) > 0 {
-							newlyFetchedMessages = append(newlyFetchedMessages, fmt.Sprintf("Message from %s:\n%s", channelInfo.Identifier, cleanedMsg))
+						cleanedMsg := cleanString(msg.Content)
+						if len(cleanedMsg) > 0 || len(msg.Images) > 0 {
+							// Update content with channel info
+							msg.Content = fmt.Sprintf("Message from %s:\n%s", channelInfo.Identifier, cleanedMsg)
+							newlyFetchedMessages = append(newlyFetchedMessages, msg)
 						}
 					}
 				}
@@ -431,9 +448,9 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 
 			log.Printf("Batch deadline reached (%v). Processing %d messages from buffer.", batchDeadline.Format(time.RFC3339), len(messageBuffer))
 			// Create a copy of the buffer to process and clear the original
-			messagesToSend := make([]string, len(messageBuffer))
+			messagesToSend := make([]Message, len(messageBuffer))
 			copy(messagesToSend, messageBuffer)
-			messageBuffer = []string{} // Clear the buffer
+			messageBuffer = []Message{} // Clear the buffer
 
 			// Important: Reset timer state *before* unlocking
 			batchTimer = nil
@@ -451,14 +468,19 @@ func monitorChannels(ctx context.Context, api *tg.Client, config Config, aiClien
 	}
 }
 
-func handleAIInteraction(ctx context.Context, api *tg.Client, config Config, aiClient AIClient, message string) error {
+func handleAIInteraction(ctx context.Context, api *tg.Client, config Config, aiClient AIClient, message Message) error {
 	messages := aiClient.GetMessageHistory()
 	fmt.Println("----------------------------------------------------")
 	fmt.Println("MESSAGE HISTORY: ", messages)
 	fmt.Println("----------------------------------------------------")
 	fmt.Println("----------------------------------------------------")
-	fmt.Println("LAST MESSAGE: ", message)
-	aiResponse, err := aiClient.SendMessage(ctx, cleanString(message))
+	fmt.Println("LAST MESSAGE CONTENT: ", message.Content)
+	fmt.Printf("LAST MESSAGE IMAGES: %d\n", len(message.Images))
+	
+	// Clean the text content but keep images
+	message.Content = cleanString(message.Content)
+	
+	aiResponse, err := aiClient.SendMessage(ctx, message)
 	if err != nil {
 		return fmt.Errorf("error sending message to AI: %v", err)
 	}
@@ -558,8 +580,8 @@ func getMessages(ctx context.Context, api *tg.Client, channelInfo ChannelInfo, l
 	}
 }
 
-func processNewMessages(channelID string, messages []tg.MessageClass, lastMessageIDs map[string]int) []string {
-	var newMessages []string
+func processNewMessages(ctx context.Context, api *tg.Client, dl *downloader.Downloader, channelID string, messages []tg.MessageClass, lastMessageIDs map[string]int) ([]Message, error) {
+	var newMessages []Message
 	latestMessageID := lastMessageIDs[channelID]
 
 	for i := len(messages) - 1; i >= 0; i-- {
@@ -572,18 +594,67 @@ func processNewMessages(channelID string, messages []tg.MessageClass, lastMessag
 			date := int64(msg.GetDate())
 			unixTimeUTC := time.Unix(date, 0)
 			unitTimeInRFC3339 := unixTimeUTC.Format("15:04:05")
-			newMessages = append(newMessages, unitTimeInRFC3339+"\n"+msg.Message)
+			
+			content := unitTimeInRFC3339 + "\n" + msg.Message
+			var images []Image
+
+			// Check for media
+			if media, ok := msg.Media.(*tg.MessageMediaPhoto); ok {
+				if photo, ok := media.Photo.(*tg.Photo); ok {
+					// Download photo
+					var buf bytes.Buffer
+					_, err := dl.Download(api, &tg.InputPhotoFileLocation{
+						ID:            photo.ID,
+						AccessHash:    photo.AccessHash,
+						FileReference: photo.FileReference,
+						ThumbSize:     "w", // Largest size usually, or try "y" or check sizes
+					}).Stream(ctx, &buf)
+
+					if err == nil {
+						images = append(images, Image{
+							Data:     buf.Bytes(),
+							MIMEType: "image/jpeg", // Assume JPEG for Telegram photos
+						})
+						log.Printf("Downloaded image from message %d", msg.ID)
+					} else {
+						// Fallback to "x" or "y" if "w" fails? Or just log
+						log.Printf("Failed to download image: %v", err)
+					}
+				}
+			}
+
+			newMessages = append(newMessages, Message{
+				Role:    "user",
+				Content: content,
+				Images:  images,
+			})
+
 			if msg.ID > lastMessageIDs[channelID] {
 				lastMessageIDs[channelID] = msg.ID
 			}
 		}
 	}
 
-	return newMessages
+	return newMessages, nil
 }
 
-func mergeMessages(messages []string) string {
-	return strings.Join(messages, "\n\n")
+func mergeMessages(messages []Message) Message {
+	var mergedText strings.Builder
+	var allImages []Image
+	
+	for i, msg := range messages {
+		if i > 0 {
+			mergedText.WriteString("\n\n")
+		}
+		mergedText.WriteString(msg.Content)
+		allImages = append(allImages, msg.Images...)
+	}
+	
+	return Message{
+		Role:    "user",
+		Content: mergedText.String(),
+		Images:  allImages,
+	}
 }
 
 func sendToTelegram(ctx context.Context, api *tg.Client, channelUsername, message string, silent bool) error {

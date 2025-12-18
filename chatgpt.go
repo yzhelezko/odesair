@@ -3,9 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 )
@@ -25,16 +26,58 @@ type responseFormat struct {
 	Type string `json:"type"`
 }
 
-func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
-	c.AddMessageToHistory(Message{Role: "user", Content: message})
+func (c *ChatGPTClient) SendMessage(ctx context.Context, message Message) (AIJSONResponse, error) {
+	c.AddMessageToHistory(message)
 
 	url := "https://api.openai.com/v1/chat/completions"
+
+	var apiMessages []map[string]interface{}
+
+	// System message
+	apiMessages = append(apiMessages, map[string]interface{}{
+		"role":    "system",
+		"content": c.SystemMessage + "\n Текущее время: " + time.Now().Format("15:04:05"),
+	})
+
+	// History messages
+	for _, msg := range c.MessageHistory {
+		if len(msg.Images) > 0 {
+			var contentParts []map[string]interface{}
+
+			// Add text if present
+			if msg.Content != "" {
+				contentParts = append(contentParts, map[string]interface{}{
+					"type": "text",
+					"text": msg.Content,
+				})
+			}
+
+			// Add images
+			for _, img := range msg.Images {
+				contentParts = append(contentParts, map[string]interface{}{
+					"type": "image_url",
+					"image_url": map[string]string{
+						"url": fmt.Sprintf("data:%s;base64,%s", img.MIMEType, base64.StdEncoding.EncodeToString(img.Data)),
+					},
+				})
+			}
+
+			apiMessages = append(apiMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": contentParts,
+			})
+		} else {
+			apiMessages = append(apiMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": msg.Content,
+			})
+		}
+	}
+
 	reqBody, err := json.Marshal(map[string]interface{}{
 		"model":           "o3-mini",
 		"response_format": responseFormat{Type: "json_object"},
-		"messages": append([]Message{
-			{Role: "system", Content: c.SystemMessage + "\n Текущее время: " + time.Now().Format("15:04:05")},
-		}, c.MessageHistory...),
+		"messages":        apiMessages,
 	})
 	if err != nil {
 		return AIJSONResponse{}, err
@@ -52,7 +95,7 @@ func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSON
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return AIJSONResponse{}, err
 	}
@@ -69,9 +112,12 @@ func (c *ChatGPTClient) SendMessage(ctx context.Context, message string) (AIJSON
 	}
 
 	var aiResp AIJSONResponse
-	if err := json.Unmarshal([]byte(chatGPTResp.Choices[0].Message.Content), &aiResp); err != nil {
-		return AIJSONResponse{}, err
+	if len(chatGPTResp.Choices) > 0 {
+		if err := json.Unmarshal([]byte(chatGPTResp.Choices[0].Message.Content), &aiResp); err != nil {
+			return AIJSONResponse{}, err
+		}
+		c.AddMessageToHistory(Message{Role: "assistant", Content: fmt.Sprintf("%s Danger: %v StatusChanged: %v", aiResp.Text, aiResp.Danger, aiResp.StatusChanged)})
+		return aiResp, nil
 	}
-	c.AddMessageToHistory(Message{Role: "assistant", Content: fmt.Sprintf("%s Danger: %v StatusChanged: %v", aiResp.Text, aiResp.Danger, aiResp.StatusChanged)})
-	return aiResp, nil
+	return AIJSONResponse{}, fmt.Errorf("no response from chatgpt")
 }

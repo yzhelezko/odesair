@@ -3,9 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -16,15 +17,6 @@ type DeepseekClient struct {
 	HTTPClient     *http.Client
 	SystemMessage  string
 	MessageHistory []Message
-}
-
-func NewDeepseekClient(apiKey string, systemMessage string) *DeepseekClient {
-	return &DeepseekClient{
-		APIKey:         apiKey,
-		HTTPClient:     &http.Client{Timeout: 30 * time.Second},
-		SystemMessage:  systemMessage,
-		MessageHistory: []Message{},
-	}
 }
 
 func (c *DeepseekClient) AddMessageToHistory(message Message) {
@@ -38,15 +30,57 @@ func (c *DeepseekClient) GetMessageHistory() []Message {
 	return c.MessageHistory
 }
 
-func (c *DeepseekClient) SendMessage(ctx context.Context, message string) (AIJSONResponse, error) {
-	c.AddMessageToHistory(Message{Role: "user", Content: message})
+func (c *DeepseekClient) SendMessage(ctx context.Context, message Message) (AIJSONResponse, error) {
+	c.AddMessageToHistory(message)
 
 	url := "https://api.deepseek.com/v1/chat/completions"
+
+	var apiMessages []map[string]interface{}
+
+	// System message
+	apiMessages = append(apiMessages, map[string]interface{}{
+		"role":    "system",
+		"content": c.SystemMessage + "\n Current time: " + time.Now().Format("15:04:05"),
+	})
+
+	// History messages
+	for _, msg := range c.MessageHistory {
+		if len(msg.Images) > 0 {
+			var contentParts []map[string]interface{}
+			
+			// Add text
+			if msg.Content != "" {
+				contentParts = append(contentParts, map[string]interface{}{
+					"type": "text",
+					"text": msg.Content,
+				})
+			}
+
+			// Add images
+			for _, img := range msg.Images {
+				contentParts = append(contentParts, map[string]interface{}{
+					"type": "image_url",
+					"image_url": map[string]string{
+						"url": fmt.Sprintf("data:%s;base64,%s", img.MIMEType, base64.StdEncoding.EncodeToString(img.Data)),
+					},
+				})
+			}
+
+			apiMessages = append(apiMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": contentParts,
+			})
+		} else {
+			apiMessages = append(apiMessages, map[string]interface{}{
+				"role":    msg.Role,
+				"content": msg.Content,
+			})
+		}
+	}
+
 	reqBody, err := json.Marshal(map[string]interface{}{
-		"model": "deepseek-chat",
-		"messages": append([]Message{
-			{Role: "system", Content: c.SystemMessage + "\n Current time: " + time.Now().Format("15:04:05")},
-		}, c.MessageHistory...),
+		"model":    "deepseek-chat",
+		"messages": apiMessages,
 	})
 	if err != nil {
 		return AIJSONResponse{}, err
@@ -64,7 +98,7 @@ func (c *DeepseekClient) SendMessage(ctx context.Context, message string) (AIJSO
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return AIJSONResponse{}, err
 	}
@@ -100,8 +134,10 @@ func (c *DeepseekClient) SendMessage(ctx context.Context, message string) (AIJSO
 
 	var aiResp AIJSONResponse
 	if err := json.Unmarshal([]byte(content), &aiResp); err != nil {
-		return AIJSONResponse{}, fmt.Errorf("failed to parse AI response: %w (content: %q)", err, content)
+		return AIJSONResponse{}, fmt.Errorf("failed to unmarshal JSON content: %w (content: %q)", err, content)
 	}
+
 	c.AddMessageToHistory(Message{Role: "assistant", Content: fmt.Sprintf("%s Danger: %v StatusChanged: %v", aiResp.Text, aiResp.Danger, aiResp.StatusChanged)})
+
 	return aiResp, nil
 }
