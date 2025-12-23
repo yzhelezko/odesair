@@ -143,6 +143,8 @@ type GeminiClient struct {
 	MessageHistory []Message
 }
 
+// GLMClient struct is defined in glm.go
+
 func main() {
 	config := loadConfig()
 
@@ -248,6 +250,8 @@ func updateAIClientSystemMessage(aiClient AIClient, newMessage string) {
 		c.SystemMessage = newMessage
 	case *GeminiClient:
 		c.SystemMessage = newMessage
+	case *GLMClient:
+		c.SystemMessage = newMessage
 	default:
 		log.Println("Unknown AI client type")
 	}
@@ -302,6 +306,15 @@ func initAIClient(config Config) (AIClient, error) {
 			HTTPClient:     &http.Client{},
 			SystemMessage:  systemMessage,
 			MessageHistory: []Message{},
+		}, nil
+	case "glm":
+		log.Println("Initializing GLM-4.7 client")
+		return &GLMClient{
+			APIKey:         config.AIAPIKey,
+			HTTPClient:     &http.Client{},
+			SystemMessage:  systemMessage,
+			MessageHistory: []Message{},
+			UseCodingPlan:  true, // Set to true if using GLM Coding Plan subscription
 		}, nil
 	default:
 		log.Printf("Unknown AI choice: %s", config.AIChoice)
@@ -509,10 +522,10 @@ func handleAIInteraction(ctx context.Context, api *tg.Client, config Config, aiC
 	}
 	fmt.Println("----------------------------------------------------")
 	fmt.Printf("LAST MESSAGE: %s\n", formatMessageForLog(message))
-	
+
 	// Clean the text content but keep images
 	message.Content = cleanString(message.Content)
-	
+
 	aiResponse, err := aiClient.SendMessage(ctx, message)
 	if err != nil {
 		return fmt.Errorf("error sending message to AI: %v", err)
@@ -693,7 +706,7 @@ func processNewMessages(ctx context.Context, api *tg.Client, dl *downloader.Down
 			date := int64(msg.GetDate())
 			unixTimeUTC := time.Unix(date, 0)
 			unitTimeInRFC3339 := unixTimeUTC.Format("15:04:05")
-			
+
 			content := unitTimeInRFC3339 + "\n" + msg.Message
 			var images []Image
 
@@ -724,7 +737,7 @@ func processNewMessages(ctx context.Context, api *tg.Client, dl *downloader.Down
 func mergeMessages(messages []Message) Message {
 	var mergedText strings.Builder
 	var allImages []Image
-	
+
 	for i, msg := range messages {
 		if i > 0 {
 			mergedText.WriteString("\n\n")
@@ -732,7 +745,7 @@ func mergeMessages(messages []Message) Message {
 		mergedText.WriteString(msg.Content)
 		allImages = append(allImages, msg.Images...)
 	}
-	
+
 	return Message{
 		Role:    "user",
 		Content: mergedText.String(),
