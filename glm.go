@@ -25,7 +25,7 @@ type GLMClient struct {
 	UseCodingPlan bool
 }
 
-// GLM-4.7 API configuration
+// GLM API configuration
 const (
 	// GLM general API endpoint
 	glmAPIEndpoint = "https://api.z.ai/api/paas/v4/chat/completions"
@@ -53,7 +53,9 @@ func (c *GLMClient) SendMessage(ctx context.Context, message Message) (AIJSONRes
 	// Add user message to history at the beginning
 	c.AddMessageToHistory(message)
 
-	// Select endpoint based on plan
+	// Always use the general API endpoint.
+	// Note: The Coding Plan endpoint (glmCodingAPIEndpoint) is for coding tools only
+	// (Claude Code, Cline, etc.), not for direct API calls.
 	endpoint := glmAPIEndpoint
 	if c.UseCodingPlan {
 		endpoint = glmCodingAPIEndpoint
@@ -75,8 +77,10 @@ func (c *GLMClient) SendMessage(ctx context.Context, message Message) (AIJSONRes
 		role := msg.Role
 		// GLM uses "assistant" role (like OpenAI), not "model" like Gemini
 
-		if len(msg.Images) > 0 {
-			// Multimodal message with images
+		// If using Coding Plan (GLM-4.7), skip images - it's text-only
+		// If not using Coding Plan, include images with vision model
+		if !c.UseCodingPlan && len(msg.Images) > 0 {
+			// Multimodal message with images (vision mode)
 			var contentParts []map[string]interface{}
 
 			// Add text content
@@ -102,7 +106,7 @@ func (c *GLMClient) SendMessage(ctx context.Context, message Message) (AIJSONRes
 				"content": contentParts,
 			})
 		} else {
-			// Text-only message
+			// Text-only message (or Coding Plan mode - skip images)
 			apiMessages = append(apiMessages, map[string]interface{}{
 				"role":    role,
 				"content": msg.Content,
@@ -110,19 +114,27 @@ func (c *GLMClient) SendMessage(ctx context.Context, message Message) (AIJSONRes
 		}
 	}
 
-	log.Printf("Sending message history to GLM-4.7 with %d messages", len(apiMessages))
+	// Always use GLM-4.7
+	// Coding Plan: text-only (images skipped above)
+	// Regular API: supports images
+	if c.UseCodingPlan {
+		log.Printf("Sending message history to GLM-4.7 (Coding Plan, text-only) with %d messages", len(apiMessages))
+	} else {
+		log.Printf("Sending message history to GLM-4.7 with %d messages", len(apiMessages))
+	}
 
-	// Build request body with GLM-4.7 recommended settings
+	// Build request body
 	// Reference: https://docs.z.ai/guides/overview/migrate-to-glm-new
 	reqBodyMap := map[string]interface{}{
 		"model":       glmModel,
 		"messages":    apiMessages,
 		"temperature": 1.0,  // Recommended default for GLM-4.7
-		"max_tokens":  4096, // Reasonable default, GLM-4.7 supports up to 128K
-		// Note: Not using top_p when using temperature (recommended: use one or the other)
-		// "top_p": 0.95, // Default value if you prefer nucleus sampling instead
-		// Deep thinking can be enabled for complex reasoning tasks:
-		"thinking": map[string]string{"type": "enabled"},
+		"max_tokens":  4096, // Reasonable default
+	}
+
+	// Enable deep thinking only for Coding Plan
+	if c.UseCodingPlan {
+		reqBodyMap["thinking"] = map[string]interface{}{"type": "enabled"}
 	}
 
 	reqBody, err := json.Marshal(reqBodyMap)
