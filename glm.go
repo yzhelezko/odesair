@@ -130,11 +130,7 @@ func (c *GLMClient) SendMessage(ctx context.Context, message Message) (AIJSONRes
 		"messages":    apiMessages,
 		"temperature": 1.0,  // Recommended default for GLM-4.7
 		"max_tokens":  4096, // Reasonable default
-	}
-
-	// Enable deep thinking only for Coding Plan
-	if c.UseCodingPlan {
-		reqBodyMap["thinking"] = map[string]interface{}{"type": "enabled"}
+		"thinking":    map[string]interface{}{"type": "enabled"},
 	}
 
 	reqBody, err := json.Marshal(reqBodyMap)
