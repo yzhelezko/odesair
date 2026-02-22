@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// GLMClient implements the AIClient interface for Z.AI's GLM-4.7 model.
+// GLMClient implements the AIClient interface for Z.AI's GLM model.
 // Documentation: https://docs.z.ai/guides/develop/http/introduction
 // Migration guide: https://docs.z.ai/guides/overview/migrate-to-glm-new
 type GLMClient struct {
@@ -48,7 +48,7 @@ func (c *GLMClient) GetMessageHistory() []Message {
 	return c.MessageHistory
 }
 
-// SendMessage sends the current message history to the GLM-4.7 API and returns the AI's response.
+// SendMessage sends the current message history to the GLM API and returns the AI's response.
 func (c *GLMClient) SendMessage(ctx context.Context, message Message) (AIJSONResponse, error) {
 	// Add user message to history at the beginning
 	c.AddMessageToHistory(message)
@@ -77,7 +77,7 @@ func (c *GLMClient) SendMessage(ctx context.Context, message Message) (AIJSONRes
 		role := msg.Role
 		// GLM uses "assistant" role (like OpenAI), not "model" like Gemini
 
-		// If using Coding Plan (GLM-4.7), skip images - it's text-only
+		// If using Coding Plan (GLM), skip images - it's text-only
 		// If not using Coding Plan, include images with vision model
 		if !c.UseCodingPlan && len(msg.Images) > 0 {
 			// Multimodal message with images (vision mode)
@@ -114,13 +114,13 @@ func (c *GLMClient) SendMessage(ctx context.Context, message Message) (AIJSONRes
 		}
 	}
 
-	// Always use GLM-4.7
+	// Always use GLM
 	// Coding Plan: text-only (images skipped above)
 	// Regular API: supports images
 	if c.UseCodingPlan {
-		log.Printf("Sending message history to GLM-4.7 (Coding Plan, text-only) with %d messages", len(apiMessages))
+		log.Printf("Sending message history to GLM (Coding Plan, text-only) with %d messages", len(apiMessages))
 	} else {
-		log.Printf("Sending message history to GLM-4.7 with %d messages", len(apiMessages))
+		log.Printf("Sending message history to GLM with %d messages", len(apiMessages))
 	}
 
 	// Build request body
@@ -128,7 +128,7 @@ func (c *GLMClient) SendMessage(ctx context.Context, message Message) (AIJSONRes
 	reqBodyMap := map[string]interface{}{
 		"model":       glmModel,
 		"messages":    apiMessages,
-		"temperature": 1.0,  // Recommended default for GLM-4.7
+		"temperature": 1.0,  // Recommended default for GLM
 		"max_tokens":  4096, // Reasonable default
 		"thinking":    map[string]interface{}{"type": "enabled"},
 	}

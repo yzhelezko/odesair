@@ -308,7 +308,7 @@ func initAIClient(config Config) (AIClient, error) {
 			MessageHistory: []Message{},
 		}, nil
 	case "glm":
-		log.Println("Initializing GLM-4.7 client")
+		log.Println("Initializing GLM client")
 		return &GLMClient{
 			APIKey:         config.AIAPIKey,
 			HTTPClient:     &http.Client{},
