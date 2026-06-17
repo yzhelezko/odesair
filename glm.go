@@ -32,7 +32,7 @@ const (
 	// GLM Coding Plan endpoint (for subscribers)
 	glmCodingAPIEndpoint = "https://api.z.ai/api/coding/paas/v4/chat/completions"
 	// Model identifier
-	glmModel = "glm-5"
+	glmModel = "glm-5.2"
 )
 
 // AddMessageToHistory adds a message to the client's history, maintaining max history size.
