@@ -31,24 +31,30 @@ func TestLiveLLM(t *testing.T) {
 	tools := NewToolbox(tg, []string{"Sila_GO", "xydessa_live"}, false, loc)
 	agent := NewAgent(llm, tools, prompt.Text, func() AlertStatus { return AlertActive }, loc, cfg.ContextTokens)
 
+	// The last step delivers the automatic all-clear note together with an ordinary post.
 	steps := []struct {
 		channel, text string
+		alertEnded    bool
 		wantAlerts    int
 	}{
-		{"xydessa_live", "Доброе утро! Сегодня в Одессе солнечно, +18.", 0},
-		{"Sila_GO", "Шахед с моря курсом на Аркадию! Жителям Аркадии — в укрытие.", 1},
-		{"xydessa_live", "Подписывайтесь на наш канал, розыгрыш призов среди подписчиков.", 1},
-		{systemChannel, alertEnded, 2},
+		{"xydessa_live", "Доброе утро! Сегодня в Одессе солнечно, +18.", false, 0},
+		{"Sila_GO", "Шахед с моря курсом на Аркадию! Жителям Аркадии — в укрытие.", false, 1},
+		{"xydessa_live", "Подписывайтесь на наш канал, розыгрыш призов среди подписчиков.", false, 1},
+		{"xydessa_live", "Отбой воздушной тревоги в Одессе.", true, 1},
 	}
 	for i, s := range steps {
 		start := time.Now()
-		if !agent.runTurn(context.Background(), []Post{{ID: i + 1, At: time.Now(), Channel: s.channel, Text: s.text}}) {
+		posts := []Post{{ID: i + 1, At: time.Now(), Channel: s.channel, Text: s.text}}
+		if s.alertEnded {
+			posts = append([]Post{tools.Announce(context.Background(), false, time.Now())}, posts...)
+		}
+		if !agent.runTurn(context.Background(), posts) {
 			t.Fatalf("turn %d: llm call failed", i)
 		}
 		t.Logf("turn %d: %v, calls so far %d, usage %+v, sent %q",
 			i, time.Since(start).Round(time.Millisecond), len(llm.requests), llm.usage, tg.sent)
-		if len(tg.sent) != s.wantAlerts {
-			t.Errorf("turn %d (%q): alerts = %d, want %d", i, s.text, len(tg.sent), s.wantAlerts)
+		if tools.Sends() != s.wantAlerts {
+			t.Errorf("turn %d (%q): agent alerts = %d, want %d", i, s.text, tools.Sends(), s.wantAlerts)
 		}
 	}
 

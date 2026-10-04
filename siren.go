@@ -14,10 +14,10 @@ const (
 	sirenInterval = 10 * time.Second
 	sirenTimeout  = 5 * time.Second
 	sirenMaxFails = 6
-	systemChannel = "система"
-	alertStarted  = "Объявлена воздушная тревога в Одессе."
-	alertEnded    = "Отбой воздушной тревоги в Одессе."
 )
+
+// AlertChange is called when the air alert starts or ends.
+type AlertChange func(ctx context.Context, active bool, at time.Time)
 
 type AlertStatus int
 
@@ -69,7 +69,7 @@ func (s *Siren) Open() bool {
 	return s.now().Sub(s.endedAt) < s.grace
 }
 
-func (s *Siren) Poll(ctx context.Context, emit func(Post)) {
+func (s *Siren) Poll(ctx context.Context, changed AlertChange) {
 	active, err := s.check(ctx)
 	now := s.now()
 
@@ -96,16 +96,12 @@ func (s *Siren) Poll(ctx context.Context, emit func(Post)) {
 		return
 	}
 	slog.Info("air alert", "status", next.String())
-	switch {
-	case prev == AlertUnknown:
-	case active:
-		emit(Post{At: now, Channel: systemChannel, Text: alertStarted})
-	default:
-		emit(Post{At: now, Channel: systemChannel, Text: alertEnded})
+	if prev != AlertUnknown {
+		changed(ctx, active, now)
 	}
 }
 
-func (s *Siren) Run(ctx context.Context, emit func(Post)) error {
+func (s *Siren) Run(ctx context.Context, changed AlertChange) error {
 	t := time.NewTicker(sirenInterval)
 	defer t.Stop()
 	for {
@@ -113,7 +109,7 @@ func (s *Siren) Run(ctx context.Context, emit func(Post)) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			s.Poll(ctx, emit)
+			s.Poll(ctx, changed)
 		}
 	}
 }

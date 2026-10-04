@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 )
@@ -17,57 +18,64 @@ type fakeSiren struct {
 
 func (f *fakeSiren) check(context.Context) (bool, error) { return f.active, f.err }
 
+// changes records the alert transitions a Siren reports.
+type changes struct{ active []bool }
+
+func (c *changes) record(_ context.Context, active bool, _ time.Time) {
+	c.active = append(c.active, active)
+}
+
 func TestSirenTransitionsAndGrace(t *testing.T) {
 	api := &fakeSiren{}
-	var out sink
+	var got changes
 	clock := time.Now()
 	s := NewSiren(api.check, 10*time.Minute)
 	s.now = func() time.Time { return clock }
-	poll := func() { s.Poll(context.Background(), out.emit) }
+	poll := func() { s.Poll(context.Background(), got.record) }
 
 	if !s.Open() || s.Status() != AlertUnknown {
 		t.Fatal("unknown state must fail open")
 	}
 
 	poll()
-	if s.Open() || s.Status() != AlertInactive || len(out.posts) != 0 {
-		t.Fatalf("first observation: open = %v, status = %v, events = %d", s.Open(), s.Status(), len(out.posts))
+	if s.Open() || s.Status() != AlertInactive || len(got.active) != 0 {
+		t.Fatalf("first observation: open = %v, status = %v, changes = %v", s.Open(), s.Status(), got.active)
 	}
 
 	api.active = true
 	poll()
 	poll()
-	if !s.Open() || len(out.posts) != 1 || out.posts[0].Text != alertStarted || out.posts[0].Channel != systemChannel {
-		t.Fatalf("alert start: open = %v, events = %+v", s.Open(), out.posts)
+	if !s.Open() || !slices.Equal(got.active, []bool{true}) {
+		t.Fatalf("alert start must be reported once: open = %v, changes = %v", s.Open(), got.active)
 	}
 
 	api.active = false
 	poll()
-	if !s.Open() || len(out.posts) != 2 || out.posts[1].Text != alertEnded {
-		t.Fatalf("alert end must keep the gate open for the grace period: events = %+v", out.posts)
+	if !s.Open() || !slices.Equal(got.active, []bool{true, false}) {
+		t.Fatalf("alert end must keep the window open for the grace period: changes = %v", got.active)
 	}
 	clock = clock.Add(10 * time.Minute)
 	poll()
-	if s.Open() || len(out.posts) != 2 {
-		t.Fatal("gate must close after the grace period")
+	if s.Open() || len(got.active) != 2 {
+		t.Fatal("window must close after the grace period")
 	}
 }
 
-func TestSirenStartsDuringAlertWithoutEvent(t *testing.T) {
+func TestSirenStartsDuringAlertWithoutChange(t *testing.T) {
 	api := &fakeSiren{active: true}
-	var out sink
+	var got changes
 	s := NewSiren(api.check, time.Minute)
-	s.Poll(context.Background(), out.emit)
-	if !s.Open() || s.Status() != AlertActive || len(out.posts) != 0 {
-		t.Fatalf("open = %v, status = %v, events = %d", s.Open(), s.Status(), len(out.posts))
+	s.Poll(context.Background(), got.record)
+	if !s.Open() || s.Status() != AlertActive || len(got.active) != 0 {
+		t.Fatalf("open = %v, status = %v, changes = %v", s.Open(), s.Status(), got.active)
 	}
 }
 
 func TestSirenFailsOpenAfterRepeatedErrors(t *testing.T) {
 	api := &fakeSiren{}
-	var out sink
+	var got changes
 	s := NewSiren(api.check, 0)
-	poll := func() { s.Poll(context.Background(), out.emit) }
+	poll := func() { s.Poll(context.Background(), got.record) }
 
 	poll()
 	api.err = errors.New("timeout")
@@ -79,12 +87,12 @@ func TestSirenFailsOpenAfterRepeatedErrors(t *testing.T) {
 	}
 	poll()
 	if !s.Open() {
-		t.Fatal("persistent failures must open the gate")
+		t.Fatal("persistent failures must open the window")
 	}
 	api.err = nil
 	poll()
-	if s.Open() || len(out.posts) != 0 {
-		t.Fatal("recovery must restore the gate without events")
+	if s.Open() || len(got.active) != 0 {
+		t.Fatal("recovery must restore the window without reporting a change")
 	}
 }
 

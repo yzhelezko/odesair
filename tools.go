@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -27,6 +28,13 @@ const (
 	toolGetRecent  = "get_recent_messages"
 	alertPrefixCut = dangerPrefix + clearPrefix + " \n"
 	noticeSep      = "\n\n"
+
+	// Fixed posts for the air alert itself, and the notes that tell the agent about them.
+	systemChannel  = "система"
+	alertStartPost = "📢 Воздушная тревога в Одессе."
+	alertEndText   = "Отбой воздушной тревоги в Одессе."
+	alertStartNote = "Объявлена воздушная тревога в Одессе. Автоматическое сообщение об этом опубликовано в канале."
+	alertEndNote   = "Отбой воздушной тревоги в Одессе. Автоматическое сообщение об отбое опубликовано в канале."
 )
 
 type Post struct {
@@ -48,7 +56,8 @@ type sentAlert struct {
 	text   string
 }
 
-// Toolbox is used from the agent goroutine only.
+// Toolbox belongs to the agent goroutine, except Announce, which the siren
+// goroutine calls; mu guards the alert memory they share.
 type Toolbox struct {
 	tg      Messenger
 	sources []string
@@ -56,10 +65,12 @@ type Toolbox struct {
 	now     func() time.Time
 	loc     *time.Location
 	defs    []ToolDef
-	sent    []sentAlert
 	sends   int
-	// notice, when it returns text, is appended to the posted alert.
+	// notice, when it returns text, is appended to every post.
 	notice func() string
+
+	mu   sync.Mutex
+	sent []sentAlert
 }
 
 func NewToolbox(tg Messenger, sources []string, dryRun bool, loc *time.Location) *Toolbox {
@@ -104,14 +115,22 @@ func toolDefs(sources []string) []ToolDef {
 
 func (t *Toolbox) Defs() []ToolDef { return t.defs }
 
-// Sends is the number of alerts sent since start.
+// Sends is the number of alerts the agent sent since start.
 func (t *Toolbox) Sends() int { return t.sends }
 
 // Alerts returns alerts sent within alertMemory, oldest first.
 func (t *Toolbox) Alerts() []sentAlert {
 	cutoff := t.now().Add(-alertMemory)
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.sent = slices.DeleteFunc(t.sent, func(s sentAlert) bool { return s.at.Before(cutoff) })
-	return t.sent
+	return slices.Clone(t.sent)
+}
+
+func (t *Toolbox) remember(s sentAlert) {
+	t.mu.Lock()
+	t.sent = append(t.sent, s)
+	t.mu.Unlock()
 }
 
 // Seed restores alert memory from the output channel's own history.
@@ -122,8 +141,35 @@ func (t *Toolbox) Seed(posts []Post) {
 			continue
 		}
 		text, _, _ := strings.Cut(p.Text, noticeSep+warnPrefix)
-		t.sent = append(t.sent, sentAlert{at: p.At, danger: danger, text: strings.TrimLeft(text, alertPrefixCut)})
+		t.remember(sentAlert{at: p.At, danger: danger, text: strings.TrimLeft(text, alertPrefixCut)})
 	}
+}
+
+func (t *Toolbox) withNotice(post string) string {
+	if t.notice != nil {
+		if notice := t.notice(); notice != "" {
+			return post + noticeSep + notice
+		}
+	}
+	return post
+}
+
+// Announce posts the fixed message for the alert starting or ending and
+// returns the note that tells the agent about it. The all-clear counts as a
+// sent alert, so the agent's status goes back to safe.
+func (t *Toolbox) Announce(ctx context.Context, active bool, at time.Time) Post {
+	post, note := alertStartPost, alertStartNote
+	if !active {
+		post, note = clearPrefix+" "+alertEndText, alertEndNote
+		t.remember(sentAlert{at: at, text: alertEndText})
+	}
+	if !t.dryRun {
+		if err := t.tg.Send(ctx, t.withNotice(post), true); err != nil {
+			slog.Error("alert announcement not posted", "active", active, "err", err)
+		}
+	}
+	slog.Info("alert announced", "active", active, "dry_run", t.dryRun)
+	return Post{At: at, Channel: systemChannel, Text: note}
 }
 
 // Call runs one tool call. again reports whether the model has to see the result.
@@ -187,18 +233,12 @@ func (t *Toolbox) sendAlert(ctx context.Context, args string) error {
 	if danger {
 		prefix = dangerPrefix
 	}
-	post := prefix + " " + text
-	if t.notice != nil {
-		if notice := t.notice(); notice != "" {
-			post += noticeSep + notice
-		}
-	}
 	if !t.dryRun {
-		if err := t.tg.Send(ctx, post, !danger); err != nil {
+		if err := t.tg.Send(ctx, t.withNotice(prefix+" "+text), !danger); err != nil {
 			return fmt.Errorf("telegram: %w", err)
 		}
 	}
-	t.sent = append(t.sent, sentAlert{at: now, danger: danger, text: text})
+	t.remember(sentAlert{at: now, danger: danger, text: text})
 	t.sends++
 	slog.Info("alert sent", "danger", danger, "dry_run", t.dryRun, "text", text, "reason", a.Reason)
 	return nil

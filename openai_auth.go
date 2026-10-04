@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -260,6 +261,8 @@ type tokenSource struct {
 	tok     oauthToken
 	triedAt time.Time
 	failure error
+	// warning is read from the siren goroutine too.
+	warning atomic.Pointer[string]
 }
 
 // newTokenSource writes refreshed tokens to the file, or to the named Secret when the file is mounted from one.
@@ -300,6 +303,10 @@ func (s *tokenSource) Token(ctx context.Context) (oauthToken, error) {
 		return oauthToken{}, fmt.Errorf("openai auth: %w", err)
 	}
 	now := s.now()
+	defer func() {
+		warning := s.warn(s.tok.Expires.Sub(now))
+		s.warning.Store(&warning)
+	}()
 	remaining := s.tok.Expires.Sub(now)
 	if remaining > refreshEarly {
 		return s.tok, nil
@@ -337,9 +344,16 @@ func (s *tokenSource) refresh(ctx context.Context, now time.Time) {
 	slog.Info("openai token refreshed", "expires", s.tok.Expires.Format(time.RFC3339))
 }
 
-// Warning is set while refreshing fails and the token is about to run out.
+// Warning is set while refreshing fails and the token is about to run out. It
+// is as fresh as the last Token call.
 func (s *tokenSource) Warning() string {
-	remaining := s.tok.Expires.Sub(s.now())
+	if w := s.warning.Load(); w != nil {
+		return *w
+	}
+	return ""
+}
+
+func (s *tokenSource) warn(remaining time.Duration) string {
 	switch {
 	case s.failure == nil || remaining > warnWindow:
 		return ""

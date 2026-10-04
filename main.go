@@ -106,9 +106,12 @@ func run(ctx context.Context) error {
 			tools.Seed(posts)
 		}
 
-		siren.Poll(ctx, agent.Enqueue)
+		alertChanged := func(ctx context.Context, active bool, at time.Time) {
+			agent.Enqueue(tools.Announce(ctx, active, at))
+		}
+		siren.Poll(ctx, alertChanged)
 		g, ctx := errgroup.WithContext(ctx)
-		g.Go(func() error { return siren.Run(ctx, agent.Enqueue) })
+		g.Go(func() error { return siren.Run(ctx, alertChanged) })
 		g.Go(func() error {
 			return gaps.Run(ctx, client.API(), self.ID, updates.AuthOptions{
 				OnStart: func(context.Context) { slog.Info("updates started") },

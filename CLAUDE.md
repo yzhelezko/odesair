@@ -28,9 +28,9 @@ siren poller ─┘     (alert events go straight to the inbox)
 | `config.go` | Env parsing and validation |
 | `telegram.go` | Auth, one-time peer resolve, update handler, `Send`, `Recent` |
 | `intake.go` | Merges push and poll, drops empty, stale and duplicate posts |
-| `siren.go` | Polls the air-alert API, tracks the alert window, emits alert start/end as posts from `система` |
+| `siren.go` | Polls the air-alert API, tracks the alert window, reports alert start/end |
 | `agent.go` | Inbox loop, turn, history, context budget, prompt file reload |
-| `tools.go` | `send_alert`, `get_recent_messages`, send guards, alert memory |
+| `tools.go` | `send_alert`, `get_recent_messages`, send guards, alert memory, fixed alert start/end posts |
 | `llm.go` | OpenAI-compatible chat completions client with tool calling |
 | `responses.go` | Responses API client for the ChatGPT backend (SSE, tool calling) |
 | `openai_auth.go` | ChatGPT sign-in (OAuth with PKCE), token file, refresh |
@@ -42,6 +42,7 @@ siren poller ─┘     (alert events go straight to the inbox)
 - The agent runs a turn the moment a post arrives. Posts that arrive during an LLM call form the next turn; there is no batch timer.
 - A turn ends without a follow-up LLM call when the only tool calls were accepted `send_alert`s.
 - No tool call means nothing is posted. Guards on `send_alert`: length cap, duplicate text, rate cap.
+- Alert start and end are posted by code, not by the agent: `📢 Воздушная тревога в Одессе.` and `✅ Отбой воздушной тревоги в Одессе.`, both silent. The agent gets a note from `система` with its next post, not a turn of its own, and the all-clear resets its status to safe.
 - `danger=true` posts `🚨` with sound, `danger=false` posts `✅` silently.
 
 ## Invariants

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +132,40 @@ func TestSendAlertAppendsNoticeOnlyToThePost(t *testing.T) {
 	restored.Seed([]Post{{At: time.Now(), Text: tg.sent[1]}})
 	if alerts := restored.Alerts(); len(alerts) != 1 || alerts[0].text != "отбой" {
 		t.Fatalf("seeded alerts = %+v: the notice must be stripped", alerts)
+	}
+}
+
+func TestAnnouncePostsFixedMessages(t *testing.T) {
+	tg := &fakeMessenger{}
+	tb := NewToolbox(tg, []string{"src"}, false, time.UTC)
+	tb.notice = func() string { return "NOTICE" }
+	now := time.Now()
+
+	started := tb.Announce(context.Background(), true, now)
+	ended := tb.Announce(context.Background(), false, now)
+
+	want := []string{alertStartPost + "\n\nNOTICE", "✅ " + alertEndText + "\n\nNOTICE"}
+	if !slices.Equal(tg.sent, want) || !tg.silent[0] || !tg.silent[1] {
+		t.Fatalf("sent = %q, silent = %v", tg.sent, tg.silent)
+	}
+	if started.Channel != systemChannel || started.Text != alertStartNote || ended.Text != alertEndNote || !ended.At.Equal(now) {
+		t.Fatalf("notes = %+v, %+v", started, ended)
+	}
+	alerts := tb.Alerts()
+	if len(alerts) != 1 || alerts[0].danger || alerts[0].text != alertEndText {
+		t.Fatalf("only the all-clear counts as an alert: %+v", alerts)
+	}
+	if tb.Sends() != 0 {
+		t.Fatal("announcements must not count as alerts sent by the agent")
+	}
+	if res, again := tb.Call(context.Background(), sendCall(alertArgs(false, alertEndText))); !again || !strings.Contains(res, "дубликат") {
+		t.Fatalf("the agent must not repeat the announced all-clear: %q", res)
+	}
+
+	dry := NewToolbox(tg, []string{"src"}, true, time.UTC)
+	dry.Announce(context.Background(), false, now)
+	if len(tg.sent) != 2 || len(dry.Alerts()) != 1 {
+		t.Fatalf("dry run must record but not post: sent = %d, alerts = %d", len(tg.sent), len(dry.Alerts()))
 	}
 }
 

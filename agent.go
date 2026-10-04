@@ -85,7 +85,7 @@ func (a *Agent) Enqueue(p Post) {
 func (a *Agent) Run(ctx context.Context) error {
 	var pending []Post
 	for {
-		if len(pending) == 0 {
+		if !hasNews(pending) {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -94,7 +94,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 		}
 		pending = a.fresh(a.drain(pending))
-		if len(pending) == 0 {
+		if !hasNews(pending) {
 			continue
 		}
 		if a.runTurn(ctx, pending) {
@@ -121,9 +121,15 @@ func (a *Agent) drain(pending []Post) []Post {
 	return pending
 }
 
+// hasNews reports whether a turn is due: system notes alone wait for the next post.
+func hasNews(posts []Post) bool {
+	return slices.ContainsFunc(posts, func(p Post) bool { return p.Channel != systemChannel })
+}
+
+// fresh drops stale posts but keeps system notes: they carry a status change the agent must not miss.
 func (a *Agent) fresh(posts []Post) []Post {
 	cutoff := a.now().Add(-maxPostAge)
-	posts = slices.DeleteFunc(posts, func(p Post) bool { return p.At.Before(cutoff) })
+	posts = slices.DeleteFunc(posts, func(p Post) bool { return p.Channel != systemChannel && p.At.Before(cutoff) })
 	slices.SortStableFunc(posts, func(x, y Post) int { return x.At.Compare(y.At) })
 	return posts
 }

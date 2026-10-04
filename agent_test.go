@@ -279,6 +279,34 @@ func TestRunRetriesAfterLLMFailure(t *testing.T) {
 	}
 }
 
+func TestSystemNoteWaitsForTheNextPost(t *testing.T) {
+	started := make(chan struct{}, 2)
+	llm := &fakeLLM{fn: func(int) (ChatMessage, error) {
+		started <- struct{}{}
+		return say("skip"), nil
+	}}
+	a := newTestAgent(llm, &fakeMessenger{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+
+	a.Enqueue(Post{At: time.Now().Add(-time.Hour), Channel: systemChannel, Text: alertEndNote})
+	select {
+	case <-started:
+		t.Fatal("an alert note alone must not start a turn")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	a.Enqueue(post(1, "новый пост"))
+	<-started
+	cancel()
+	<-done
+
+	if got := llm.lastUser(0); !strings.Contains(got, alertEndNote) || !strings.Contains(got, "новый пост") {
+		t.Fatalf("the note must reach the agent with the next post, however old it is:\n%s", got)
+	}
+}
+
 func TestStalePostsAreDroppedAndSorted(t *testing.T) {
 	a := newTestAgent(&fakeLLM{}, &fakeMessenger{})
 	now := time.Now()
