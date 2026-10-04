@@ -56,7 +56,7 @@ siren poller ─┘     (alert events go straight to the inbox)
 | `LLM_MODEL` | `glm-5.3` | |
 | `LLM_EFFORT` | `low` | Sent as `reasoning_effort`; empty omits it |
 | `LLM_CONTEXT_TOKENS` | `32000` | System prompt + history |
-| `SOURCE_CHANNELS` | `odessa_infonews,xydessa_live,freechat_odesa,odesairxydessa` | Comma-separated usernames |
+| `SOURCE_CHANNELS` | `xydessa_live,freechat_odesa,odesairxydessa,Sila_GO` | Comma-separated usernames |
 | `SEND_TO_CHANNEL` | `odesair` | Output channel |
 | `ENABLE_TELEGRAM_SEND` | `true` | `false` = dry run: alerts are logged, not posted |
 | `ALERT_GRACE` | `10m` | Alert window extension after the alert ends |

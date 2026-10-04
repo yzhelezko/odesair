@@ -62,7 +62,7 @@ func loadConfig() (Config, error) {
 		Phone:       required("PHONE_NUMBER"),
 		Password:    getEnv("TG_PASSWORD", ""),
 		LLMKey:      required("API_KEY"),
-		Sources:     splitList(getEnv("SOURCE_CHANNELS", "odessa_infonews,xydessa_live,freechat_odesa,odesairxydessa")),
+		Sources:     splitList(getEnv("SOURCE_CHANNELS", "xydessa_live,freechat_odesa,odesairxydessa,Sila_GO")),
 		OutChannel:  getEnv("SEND_TO_CHANNEL", "odesair"),
 		SendEnabled: boolean("ENABLE_TELEGRAM_SEND", true),
 		LLMBaseURL:  strings.TrimRight(getEnv("LLM_BASE_URL", defaultLLMBaseURL), "/"),

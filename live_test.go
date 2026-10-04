@@ -29,7 +29,7 @@ func TestLiveLLM(t *testing.T) {
 		LLMEffort:  getEnv("LLM_EFFORT", defaultLLMEffort),
 	})}
 	tg := &fakeMessenger{}
-	tools := NewToolbox(tg, []string{"odessa_infonews", "xydessa_live"}, false, loc)
+	tools := NewToolbox(tg, []string{"Sila_GO", "xydessa_live"}, false, loc)
 	agent := NewAgent(llm, tools, prompt.Text, func() AlertStatus { return AlertActive }, loc, 32000)
 
 	steps := []struct {
@@ -37,7 +37,7 @@ func TestLiveLLM(t *testing.T) {
 		wantAlerts    int
 	}{
 		{"xydessa_live", "Доброе утро! Сегодня в Одессе солнечно, +18.", 0},
-		{"odessa_infonews", "Шахед с моря курсом на Аркадию! Жителям Аркадии — в укрытие.", 1},
+		{"Sila_GO", "Шахед с моря курсом на Аркадию! Жителям Аркадии — в укрытие.", 1},
 		{"xydessa_live", "Подписывайтесь на наш канал, розыгрыш призов среди подписчиков.", 1},
 		{systemChannel, alertEnded, 2},
 	}
