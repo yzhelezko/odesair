@@ -15,9 +15,16 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+type tgAPI interface {
+	ContactsResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error)
+	ChannelsJoinChannel(ctx context.Context, channel tg.InputChannelClass) (tg.UpdatesClass, error)
+	MessagesGetHistory(ctx context.Context, request *tg.MessagesGetHistoryRequest) (tg.MessagesMessagesClass, error)
+	MessagesSendMessage(ctx context.Context, request *tg.MessagesSendMessageRequest) (tg.UpdatesClass, error)
+}
+
 // Telegram implements Messenger and updates.ChannelAccessHasher.
 type Telegram struct {
-	api *tg.Client
+	api tgAPI
 
 	mu     sync.RWMutex
 	out    *tg.InputPeerChannel
@@ -58,7 +65,8 @@ func (t *Telegram) resolve(ctx context.Context, username string) (*tg.Channel, e
 	return nil, errors.New("not a channel")
 }
 
-// Resolve caches peers once at startup and returns the sources that resolved.
+// Resolve caches peers once at startup, joins the sources the account is not a
+// member of yet, and returns the sources that resolved.
 func (t *Telegram) Resolve(ctx context.Context, out string, sources []string) ([]Source, error) {
 	ch, err := t.resolve(ctx, out)
 	if err != nil {
@@ -81,8 +89,17 @@ func (t *Telegram) Resolve(ctx context.Context, out string, sources []string) ([
 		t.names[ch.ID] = name
 		t.hashes[ch.ID] = ch.AccessHash
 		t.mu.Unlock()
-		slog.Info("source channel", "channel", name, "push", !ch.Left)
-		resolved = append(resolved, Source{Name: name, Push: !ch.Left})
+		joined := !ch.Left
+		if !joined {
+			if _, err := t.api.ChannelsJoinChannel(ctx, ch.AsInput()); err != nil {
+				slog.Warn("join failed, channel stays on the poll", "channel", name, "err", err)
+			} else {
+				joined = true
+				slog.Info("joined channel", "channel", name)
+			}
+		}
+		slog.Info("source channel", "channel", name, "push", joined)
+		resolved = append(resolved, Source{Name: name, Push: joined})
 	}
 	if len(resolved) == 0 {
 		return nil, errors.New("no source channel resolved")

@@ -33,6 +33,7 @@ siren poller ─┘     (alert events go straight to the inbox)
 | `llm.go` | OpenAI-compatible chat completions client with tool calling |
 
 - The push watcher (`updates.Manager`) feeds the agent all the time; it only delivers channels the account has joined (`push=true` in the startup log).
+- At startup the account joins every source it is not a member of yet. A source that cannot be joined stays on the poll.
 - The poll always covers channels without push. Joined channels are polled too during the alert window (alert plus `ALERT_GRACE`), as a safety net for pushes that lag.
 - The agent runs a turn the moment a post arrives. Posts that arrive during an LLM call form the next turn; there is no batch timer.
 - A turn ends without a follow-up LLM call when the only tool calls were accepted `send_alert`s.
@@ -54,7 +55,7 @@ siren poller ─┘     (alert events go straight to the inbox)
 | `API_KEY` | — | Required. LLM key |
 | `LLM_BASE_URL` | `https://api.z.ai/api/coding/paas/v4` | `/chat/completions` is appended |
 | `LLM_MODEL` | `glm-5.3` | |
-| `LLM_EFFORT` | `low` | Sent as `reasoning_effort`; empty omits it |
+| `LLM_EFFORT` | `medium` | Sent as `reasoning_effort`; empty omits it |
 | `LLM_CONTEXT_TOKENS` | `32000` | System prompt + history |
 | `SOURCE_CHANNELS` | `xydessa_live,freechat_odesa,odesairxydessa,Sila_GO` | Comma-separated usernames |
 | `SEND_TO_CHANNEL` | `odesair` | Output channel |

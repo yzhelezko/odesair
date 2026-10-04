@@ -17,7 +17,7 @@ const (
 
 	defaultLLMBaseURL = "https://api.z.ai/api/coding/paas/v4"
 	defaultLLMModel   = "glm-5.3"
-	defaultLLMEffort  = "low"
+	defaultLLMEffort  = "medium"
 	minContextTokens  = 4000
 )
 
