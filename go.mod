@@ -1,10 +1,10 @@
 module github.com/yzhelezko/odesair_bot
 
-go 1.22.2
+go 1.27
 
 require (
-	github.com/fsnotify/fsnotify v1.7.0
 	github.com/gotd/td v0.105.0
+	golang.org/x/sync v0.7.0
 )
 
 require (
@@ -23,7 +23,6 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.24.0 // indirect
 	golang.org/x/net v0.26.0 // indirect
-	golang.org/x/sync v0.7.0 // indirect
 	golang.org/x/sys v0.21.0 // indirect
 	nhooyr.io/websocket v1.8.11 // indirect
 	rsc.io/qr v0.2.0 // indirect

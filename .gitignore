@@ -1,4 +1,3 @@
-system_message.txt
-tdlib-session
+config/
 .env
 bin/
