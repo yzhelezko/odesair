@@ -11,6 +11,7 @@ Single long-running Go process, flat `package main`. No DB, no inbound HTTP, no 
 - `make test` — `go vet` + `go test -race`
 - `make bench` — agent and intake benchmarks
 - `make live` — real LLM turns against the provider in `.env`, Telegram faked (`LIVE_LLM=1`, a few paid calls)
+- `make login` — ChatGPT sign-in in the browser; writes the token file for `LLM_MODEL=openai/...`
 - CI (`.github/workflows/ci.yaml`): vet + race tests, then build and push `ghcr.io/yzhelezko/odesair/odesair` (`latest` + short sha, linux/amd64). PR builds push too.
 
 ## Flow
@@ -31,6 +32,8 @@ siren poller ─┘     (alert events go straight to the inbox)
 | `agent.go` | Inbox loop, turn, history, context budget, prompt file reload |
 | `tools.go` | `send_alert`, `get_recent_messages`, send guards, alert memory |
 | `llm.go` | OpenAI-compatible chat completions client with tool calling |
+| `responses.go` | Responses API client for the ChatGPT backend (SSE, tool calling) |
+| `openai_auth.go` | ChatGPT sign-in (OAuth with PKCE), token file, refresh |
 
 - The push watcher (`updates.Manager`) feeds the agent all the time; it only delivers channels the account has joined (`push=true` in the startup log).
 - At startup the account joins every source it is not a member of yet. A source that cannot be joined stays on the poll.
@@ -42,7 +45,7 @@ siren poller ─┘     (alert events go straight to the inbox)
 
 ## Invariants
 
-- **Cache prefix.** Each request must extend the previous one byte for byte: static system prompt, static tools, history stored exactly as sent (including `reasoning_content`), all per-turn state in the newest user message. History is trimmed rarely and in one step (down to 60% of the budget), then the next turn restates sent alerts. Do not put time or other dynamic data in the system prompt.
+- **Cache prefix.** Each request must extend the previous one byte for byte: static system prompt, static tools, history stored exactly as sent (including the model's reasoning: `reasoning_content` on chat completions, encrypted reasoning items on the Responses API), all per-turn state in the newest user message. History is trimmed rarely and in one step (down to 60% of the budget), then the next turn restates sent alerts. Do not put time or other dynamic data in the system prompt.
 - **No duplicate alerts on retry.** A turn is retried only if the LLM failed before any alert was sent.
 - **Context budget** is in tokens; bytes-per-token is calibrated from the provider's reported `prompt_tokens`.
 
@@ -52,10 +55,11 @@ siren poller ─┘     (alert events go straight to the inbox)
 |---|---|---|
 | `APPID`, `APPHASH`, `PHONE_NUMBER` | — | Required. Telegram credentials |
 | `TG_PASSWORD` | empty | 2FA password, only for first login |
-| `API_KEY` | — | Required. LLM key |
+| `API_KEY` | — | LLM key. Not needed with ChatGPT sign-in |
 | `LLM_BASE_URL` | `https://api.z.ai/api/coding/paas/v4` | `/chat/completions` is appended |
-| `LLM_MODEL` | `glm-5.3` | |
-| `LLM_EFFORT` | `medium` | Sent as `reasoning_effort`; empty omits it |
+| `LLM_MODEL` | `glm-5.3` | `openai/<id>` with no `LLM_BASE_URL` selects ChatGPT sign-in and the Responses API |
+| `LLM_EFFORT` | `medium` | Reasoning effort; empty omits it |
+| `OPENAI_AUTH_FILE` | `config/openai-auth.json` | Token file written by `make login`; must be writable |
 | `LLM_CONTEXT_TOKENS` | `32000` | System prompt + history |
 | `SOURCE_CHANNELS` | `xydessa_live,freechat_odesa,odesairxydessa,Sila_GO` | Comma-separated usernames |
 | `SEND_TO_CHANNEL` | `odesair` | Output channel |
@@ -78,6 +82,9 @@ Deploy: k8s Deployment, 1 replica; container cwd is `/`, so config mounts at `/c
 - Running locally uses the same Telegram session as the deployed pod. Two clients on one auth key can get the session revoked (`AUTH_KEY_DUPLICATED`); stop the pod first or ask before running.
 - GLM `reasoning_effort`: 5.3 accepts only `low`/`high`/`max` and cannot disable thinking; 5.2 maps `low`/`medium` to `high` and skips thinking on `none`/`minimal`.
 - Z.ai's subscription terms restrict the Coding Plan endpoint to supported coding tools; a bot calling it directly may be throttled or cut off.
+- ChatGPT sign-in: the token is refreshed from 3 days before it expires. If refreshing keeps failing, alerts posted in the last 2 days carry a "token expires in 2 days / 1 day" line; once it expires the agent stops until a new `make login`.
+- ChatGPT sign-in: the refresh token rotates on every refresh and the new one is written back to the token file. One login must live in one place only; a second copy goes stale and its refresh fails. A replaced token file is picked up without a restart.
+- ChatGPT sign-in uses the Codex OAuth client and the ChatGPT backend with a subscription, outside the intended coding use; OpenAI may restrict the account.
 - Via OpenRouter, cache hits depend on which upstream serves the call; a miss there does not mean the prefix changed.
 - Text-only: media in posts is ignored.
 - Posts come from public channels and one public chat, so they are untrusted input to an agent that can post publicly; the prompt tells the model to treat them as data.

@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	llmTimeout  = 45 * time.Second
+	llmTimeout  = 60 * time.Second
 	llmAttempts = 3
 	llmBackoff  = 500 * time.Millisecond
 )
@@ -72,7 +72,31 @@ type chatResponse struct {
 	} `json:"usage"`
 }
 
-type LLMClient struct {
+func newLLM(cfg LLMConfig) LLM {
+	if cfg.OpenAI {
+		return NewResponsesClient(cfg)
+	}
+	return NewChatClient(cfg)
+}
+
+// retry repeats fn while it reports a retryable error, up to llmAttempts calls.
+func retry(ctx context.Context, backoff time.Duration, fn func() (again bool, err error)) error {
+	for attempt := 0; ; attempt++ {
+		again, err := fn()
+		if err == nil || !again || attempt == llmAttempts-1 {
+			return err
+		}
+		slog.Warn("llm retry", "attempt", attempt+1, "err", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff << attempt):
+		}
+	}
+}
+
+// ChatClient speaks the OpenAI-compatible chat completions API.
+type ChatClient struct {
 	url     string
 	model   string
 	key     string
@@ -81,41 +105,30 @@ type LLMClient struct {
 	backoff time.Duration
 }
 
-func NewLLMClient(cfg Config) *LLMClient {
-	return &LLMClient{
-		url:     cfg.LLMBaseURL + "/chat/completions",
-		model:   cfg.LLMModel,
-		key:     cfg.LLMKey,
-		effort:  cfg.LLMEffort,
+func NewChatClient(cfg LLMConfig) *ChatClient {
+	return &ChatClient{
+		url:     cfg.BaseURL + "/chat/completions",
+		model:   cfg.Model,
+		key:     cfg.Key,
+		effort:  cfg.Effort,
 		http:    &http.Client{Timeout: llmTimeout},
 		backoff: llmBackoff,
 	}
 }
 
-func (c *LLMClient) Chat(ctx context.Context, msgs []ChatMessage, tools []ToolDef) (ChatMessage, Usage, error) {
+func (c *ChatClient) Chat(ctx context.Context, msgs []ChatMessage, tools []ToolDef) (msg ChatMessage, usage Usage, err error) {
 	body, err := json.Marshal(chatRequest{Model: c.model, Messages: msgs, Tools: tools, ReasoningEffort: c.effort})
 	if err != nil {
-		return ChatMessage{}, Usage{}, fmt.Errorf("llm encode: %w", err)
+		return msg, usage, fmt.Errorf("llm encode: %w", err)
 	}
-
-	for attempt := 0; ; attempt++ {
-		msg, usage, retry, err := c.do(ctx, body)
-		if err == nil {
-			return msg, usage, nil
-		}
-		if !retry || attempt == llmAttempts-1 {
-			return ChatMessage{}, Usage{}, err
-		}
-		slog.Warn("llm retry", "attempt", attempt+1, "err", err)
-		select {
-		case <-ctx.Done():
-			return ChatMessage{}, Usage{}, ctx.Err()
-		case <-time.After(c.backoff << attempt):
-		}
-	}
+	err = retry(ctx, c.backoff, func() (again bool, err error) {
+		msg, usage, again, err = c.do(ctx, body)
+		return again, err
+	})
+	return msg, usage, err
 }
 
-func (c *LLMClient) do(ctx context.Context, body []byte) (msg ChatMessage, usage Usage, retry bool, err error) {
+func (c *ChatClient) do(ctx context.Context, body []byte) (msg ChatMessage, usage Usage, retry bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
 		return msg, usage, false, fmt.Errorf("llm request: %w", err)

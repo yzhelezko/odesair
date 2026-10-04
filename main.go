@@ -27,7 +27,12 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := run(ctx)
+	var err error
+	if len(os.Args) == 2 && os.Args[1] == "login" {
+		err = login(ctx, getEnv("OPENAI_AUTH_FILE", defaultAuthFile), os.Stdout)
+	} else {
+		err = run(ctx)
+	}
 	stop()
 	if err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("fatal", "err", err)
@@ -48,14 +53,22 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("system prompt: %w", err)
 	}
-	slog.Info("config", "llm", cfg.LLMBaseURL, "model", cfg.LLMModel, "effort", cfg.LLMEffort,
-		"context_tokens", cfg.ContextTokens, "sources", cfg.Sources, "out", cfg.OutChannel,
+	endpoint := cfg.LLM.BaseURL
+	if cfg.LLM.OpenAI {
+		endpoint = openaiResponsesURL
+	}
+	slog.Info("config", "llm", endpoint, "model", cfg.LLM.Model, "effort", cfg.LLM.Effort,
+		"context_tokens", cfg.LLM.ContextTokens, "sources", cfg.Sources, "out", cfg.OutChannel,
 		"send", cfg.SendEnabled)
 
 	tgc := newTelegram()
 	siren := NewSiren(sirenCheck(sirenURL), cfg.AlertGrace)
 	tools := NewToolbox(tgc, cfg.Sources, !cfg.SendEnabled, loc)
-	agent := NewAgent(NewLLMClient(cfg), tools, prompt.Text, siren.Status, loc, cfg.ContextTokens)
+	llm := newLLM(cfg.LLM)
+	if n, ok := llm.(interface{ Notice() string }); ok {
+		tools.notice = n.Notice
+	}
+	agent := NewAgent(llm, tools, prompt.Text, siren.Status, loc, cfg.LLM.ContextTokens)
 	intake := NewIntake(siren.Open, agent.Enqueue)
 
 	// The dispatcher map is not synchronised: register before the client starts.

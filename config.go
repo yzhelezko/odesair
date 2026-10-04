@@ -18,8 +18,21 @@ const (
 	defaultLLMBaseURL = "https://api.z.ai/api/coding/paas/v4"
 	defaultLLMModel   = "glm-5.3"
 	defaultLLMEffort  = "medium"
+	defaultAuthFile   = "config/openai-auth.json"
+	openaiModelPrefix = "openai/"
 	minContextTokens  = 4000
 )
+
+type LLMConfig struct {
+	// OpenAI selects ChatGPT sign-in and the Responses API; BaseURL and Key are then unused.
+	OpenAI        bool
+	BaseURL       string
+	Model         string
+	Key           string
+	Effort        string
+	AuthFile      string
+	ContextTokens int
+}
 
 type Config struct {
 	AppID    int
@@ -31,13 +44,36 @@ type Config struct {
 	OutChannel  string
 	SendEnabled bool
 
-	LLMBaseURL    string
-	LLMModel      string
-	LLMKey        string
-	LLMEffort     string
-	ContextTokens int
+	LLM LLMConfig
 
 	AlertGrace time.Duration
+}
+
+func loadLLMConfig() (LLMConfig, error) {
+	var errs []error
+	cfg := LLMConfig{
+		BaseURL:  defaultLLMBaseURL,
+		Model:    getEnv("LLM_MODEL", defaultLLMModel),
+		Key:      getEnv("API_KEY", ""),
+		Effort:   getEnv("LLM_EFFORT", defaultLLMEffort),
+		AuthFile: getEnv("OPENAI_AUTH_FILE", defaultAuthFile),
+	}
+	// With a custom endpoint, openai/<id> is that endpoint's own model id (OpenRouter).
+	base, custom := os.LookupEnv("LLM_BASE_URL")
+	if custom {
+		cfg.BaseURL = strings.TrimRight(strings.TrimSpace(base), "/")
+	}
+	if model, ok := strings.CutPrefix(cfg.Model, openaiModelPrefix); ok && !custom {
+		cfg.OpenAI, cfg.Model = true, model
+	} else if cfg.Key == "" {
+		errs = append(errs, errors.New("API_KEY is required"))
+	}
+
+	var err error
+	if cfg.ContextTokens, err = strconv.Atoi(getEnv("LLM_CONTEXT_TOKENS", "32000")); err != nil || cfg.ContextTokens < minContextTokens {
+		errs = append(errs, fmt.Errorf("LLM_CONTEXT_TOKENS must be an integer >= %d", minContextTokens))
+	}
+	return cfg, errors.Join(errs...)
 }
 
 func loadConfig() (Config, error) {
@@ -61,18 +97,14 @@ func loadConfig() (Config, error) {
 		AppHash:     required("APPHASH"),
 		Phone:       required("PHONE_NUMBER"),
 		Password:    getEnv("TG_PASSWORD", ""),
-		LLMKey:      required("API_KEY"),
 		Sources:     splitList(getEnv("SOURCE_CHANNELS", "xydessa_live,freechat_odesa,odesairxydessa,Sila_GO")),
 		OutChannel:  getEnv("SEND_TO_CHANNEL", "odesair"),
 		SendEnabled: boolean("ENABLE_TELEGRAM_SEND", true),
-		LLMBaseURL:  strings.TrimRight(getEnv("LLM_BASE_URL", defaultLLMBaseURL), "/"),
-		LLMModel:    getEnv("LLM_MODEL", defaultLLMModel),
-		LLMEffort:   getEnv("LLM_EFFORT", defaultLLMEffort),
 	}
 
 	var err error
-	if cfg.ContextTokens, err = strconv.Atoi(getEnv("LLM_CONTEXT_TOKENS", "32000")); err != nil || cfg.ContextTokens < minContextTokens {
-		errs = append(errs, fmt.Errorf("LLM_CONTEXT_TOKENS must be an integer >= %d", minContextTokens))
+	if cfg.LLM, err = loadLLMConfig(); err != nil {
+		errs = append(errs, err)
 	}
 	if cfg.AppID, err = strconv.Atoi(required("APPID")); err != nil {
 		errs = append(errs, fmt.Errorf("APPID: %w", err))

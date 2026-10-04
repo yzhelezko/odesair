@@ -12,14 +12,14 @@ import (
 	"time"
 )
 
-func testLLM(t *testing.T, effort string, h http.HandlerFunc) *LLMClient {
+func testLLM(t *testing.T, effort string, h http.HandlerFunc) *ChatClient {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return &LLMClient{url: srv.URL, model: "m", key: "secret", effort: effort, http: srv.Client(), backoff: time.Millisecond}
+	return &ChatClient{url: srv.URL, model: "m", key: "secret", effort: effort, http: srv.Client(), backoff: time.Millisecond}
 }
 
-func chat(c *LLMClient, msgs []ChatMessage, tools []ToolDef) (ChatMessage, error) {
+func chat(c *ChatClient, msgs []ChatMessage, tools []ToolDef) (ChatMessage, error) {
 	msg, _, err := c.Chat(context.Background(), msgs, tools)
 	return msg, err
 }

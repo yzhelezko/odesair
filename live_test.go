@@ -22,15 +22,14 @@ func TestLiveLLM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	llm := &recordingLLM{LLM: NewLLMClient(Config{
-		LLMBaseURL: getEnv("LLM_BASE_URL", defaultLLMBaseURL),
-		LLMModel:   getEnv("LLM_MODEL", defaultLLMModel),
-		LLMKey:     getEnv("API_KEY", ""),
-		LLMEffort:  getEnv("LLM_EFFORT", defaultLLMEffort),
-	})}
+	cfg, err := loadLLMConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	llm := &recordingLLM{LLM: newLLM(cfg)}
 	tg := &fakeMessenger{}
 	tools := NewToolbox(tg, []string{"Sila_GO", "xydessa_live"}, false, loc)
-	agent := NewAgent(llm, tools, prompt.Text, func() AlertStatus { return AlertActive }, loc, 32000)
+	agent := NewAgent(llm, tools, prompt.Text, func() AlertStatus { return AlertActive }, loc, cfg.ContextTokens)
 
 	steps := []struct {
 		channel, text string

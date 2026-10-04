@@ -26,6 +26,7 @@ const (
 	toolSendAlert  = "send_alert"
 	toolGetRecent  = "get_recent_messages"
 	alertPrefixCut = dangerPrefix + clearPrefix + " \n"
+	noticeSep      = "\n\n"
 )
 
 type Post struct {
@@ -57,6 +58,8 @@ type Toolbox struct {
 	defs    []ToolDef
 	sent    []sentAlert
 	sends   int
+	// notice, when it returns text, is appended to the posted alert.
+	notice func() string
 }
 
 func NewToolbox(tg Messenger, sources []string, dryRun bool, loc *time.Location) *Toolbox {
@@ -118,7 +121,8 @@ func (t *Toolbox) Seed(posts []Post) {
 		if !danger && !strings.HasPrefix(p.Text, clearPrefix) {
 			continue
 		}
-		t.sent = append(t.sent, sentAlert{at: p.At, danger: danger, text: strings.TrimLeft(p.Text, alertPrefixCut)})
+		text, _, _ := strings.Cut(p.Text, noticeSep+warnPrefix)
+		t.sent = append(t.sent, sentAlert{at: p.At, danger: danger, text: strings.TrimLeft(text, alertPrefixCut)})
 	}
 }
 
@@ -183,8 +187,14 @@ func (t *Toolbox) sendAlert(ctx context.Context, args string) error {
 	if danger {
 		prefix = dangerPrefix
 	}
+	post := prefix + " " + text
+	if t.notice != nil {
+		if notice := t.notice(); notice != "" {
+			post += noticeSep + notice
+		}
+	}
 	if !t.dryRun {
-		if err := t.tg.Send(ctx, prefix+" "+text, !danger); err != nil {
+		if err := t.tg.Send(ctx, post, !danger); err != nil {
 			return fmt.Errorf("telegram: %w", err)
 		}
 	}

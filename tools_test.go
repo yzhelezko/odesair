@@ -110,6 +110,30 @@ func TestSendAlertDryRunAndTelegramFailure(t *testing.T) {
 	}
 }
 
+func TestSendAlertAppendsNoticeOnlyToThePost(t *testing.T) {
+	tg := &fakeMessenger{}
+	tb := NewToolbox(tg, []string{"src"}, false, time.UTC)
+	notice := ""
+	tb.notice = func() string { return notice }
+
+	tb.Call(context.Background(), sendCall(alertArgs(true, "угроза")))
+	notice = warnPrefix + " Токен OpenAI истекает через 2 дня. Нужен повторный вход."
+	tb.Call(context.Background(), sendCall(alertArgs(false, "отбой")))
+
+	if tg.sent[0] != "🚨 угроза" || tg.sent[1] != "✅ отбой\n\n"+notice {
+		t.Fatalf("sent = %q", tg.sent)
+	}
+	if alerts := tb.Alerts(); alerts[1].text != "отбой" {
+		t.Fatalf("alert memory must not keep the notice: %q", alerts[1].text)
+	}
+
+	restored := NewToolbox(tg, []string{"src"}, false, time.UTC)
+	restored.Seed([]Post{{At: time.Now(), Text: tg.sent[1]}})
+	if alerts := restored.Alerts(); len(alerts) != 1 || alerts[0].text != "отбой" {
+		t.Fatalf("seeded alerts = %+v: the notice must be stripped", alerts)
+	}
+}
+
 func TestAlertMemorySeedAndExpiry(t *testing.T) {
 	tb := NewToolbox(&fakeMessenger{}, []string{"src"}, false, time.UTC)
 	clock := time.Now()
