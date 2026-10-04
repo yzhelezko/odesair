@@ -34,6 +34,7 @@ siren poller ─┘     (alert events go straight to the inbox)
 | `llm.go` | OpenAI-compatible chat completions client with tool calling |
 | `responses.go` | Responses API client for the ChatGPT backend (SSE, tool calling) |
 | `openai_auth.go` | ChatGPT sign-in (OAuth with PKCE), token file, refresh |
+| `k8s_secret.go` | Writes a refreshed token back into its Kubernetes Secret |
 
 - The push watcher (`updates.Manager`) feeds the agent all the time; it only delivers channels the account has joined (`push=true` in the startup log).
 - At startup the account joins every source it is not a member of yet. A source that cannot be joined stays on the poll.
@@ -59,7 +60,8 @@ siren poller ─┘     (alert events go straight to the inbox)
 | `LLM_BASE_URL` | `https://api.z.ai/api/coding/paas/v4` | `/chat/completions` is appended |
 | `LLM_MODEL` | `glm-5.3` | `openai/<id>` with no `LLM_BASE_URL` selects ChatGPT sign-in and the Responses API |
 | `LLM_EFFORT` | `medium` | Reasoning effort; empty omits it |
-| `OPENAI_AUTH_FILE` | `config/openai-auth.json` | Token file written by `make login`; must be writable |
+| `OPENAI_AUTH_FILE` | `config/openai-auth.json` | Token file written by `make login` |
+| `OPENAI_AUTH_SECRET` | empty | Kubernetes Secret the token file is mounted from; refreshed tokens are patched into it (key = file name). Needs `deploy/rbac.yaml` |
 | `LLM_CONTEXT_TOKENS` | `32000` | System prompt + history |
 | `SOURCE_CHANNELS` | `xydessa_live,freechat_odesa,odesairxydessa,Sila_GO` | Comma-separated usernames |
 | `SEND_TO_CHANNEL` | `odesair` | Output channel |
@@ -83,7 +85,8 @@ Deploy: k8s Deployment, 1 replica; container cwd is `/`, so config mounts at `/c
 - GLM `reasoning_effort`: 5.3 accepts only `low`/`high`/`max` and cannot disable thinking; 5.2 maps `low`/`medium` to `high` and skips thinking on `none`/`minimal`.
 - Z.ai's subscription terms restrict the Coding Plan endpoint to supported coding tools; a bot calling it directly may be throttled or cut off.
 - ChatGPT sign-in: the token is refreshed from 3 days before it expires. If refreshing keeps failing, alerts posted in the last 2 days carry a "token expires in 2 days / 1 day" line; once it expires the agent stops until a new `make login`.
-- ChatGPT sign-in: the refresh token rotates on every refresh and the new one is written back to the token file. One login must live in one place only; a second copy goes stale and its refresh fails. A replaced token file is picked up without a restart.
+- ChatGPT sign-in: the refresh token rotates on every refresh and the new one is written back, to the token file or to its Secret. One login must live in one place only; a second copy goes stale and its refresh fails. A replaced token file is picked up without a restart, so the Secret has to be mounted as a directory, not with `subPath`.
+- At startup the current token is written back unchanged to prove the store works; a failure is logged as an error.
 - ChatGPT sign-in uses the Codex OAuth client and the ChatGPT backend with a subscription, outside the intended coding use; OpenAI may restrict the account.
 - Via OpenRouter, cache hits depend on which upstream serves the call; a miss there does not mean the prefix changed.
 - Text-only: media in posts is ignored.

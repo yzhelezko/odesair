@@ -31,6 +31,7 @@ type LLMConfig struct {
 	Key           string
 	Effort        string
 	AuthFile      string
+	AuthSecret    string
 	ContextTokens int
 }
 
@@ -52,11 +53,12 @@ type Config struct {
 func loadLLMConfig() (LLMConfig, error) {
 	var errs []error
 	cfg := LLMConfig{
-		BaseURL:  defaultLLMBaseURL,
-		Model:    getEnv("LLM_MODEL", defaultLLMModel),
-		Key:      getEnv("API_KEY", ""),
-		Effort:   getEnv("LLM_EFFORT", defaultLLMEffort),
-		AuthFile: getEnv("OPENAI_AUTH_FILE", defaultAuthFile),
+		BaseURL:    defaultLLMBaseURL,
+		Model:      getEnv("LLM_MODEL", defaultLLMModel),
+		Key:        getEnv("API_KEY", ""),
+		Effort:     getEnv("LLM_EFFORT", defaultLLMEffort),
+		AuthFile:   getEnv("OPENAI_AUTH_FILE", defaultAuthFile),
+		AuthSecret: getEnv("OPENAI_AUTH_SECRET", ""),
 	}
 	// With a custom endpoint, openai/<id> is that endpoint's own model id (OpenRouter).
 	base, custom := os.LookupEnv("LLM_BASE_URL")

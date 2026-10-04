@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -253,6 +254,7 @@ type tokenSource struct {
 	issuer string
 	http   *http.Client
 	now    func() time.Time
+	save   func(ctx context.Context, tok oauthToken) error
 
 	mod     time.Time
 	tok     oauthToken
@@ -260,8 +262,37 @@ type tokenSource struct {
 	failure error
 }
 
-func newTokenSource(path string) *tokenSource {
-	return &tokenSource{path: path, issuer: openaiIssuer, http: &http.Client{Timeout: authTimeout}, now: time.Now}
+// newTokenSource writes refreshed tokens to the file, or to the named Secret when the file is mounted from one.
+func newTokenSource(path, secret string) *tokenSource {
+	s := &tokenSource{path: path, issuer: openaiIssuer, http: &http.Client{Timeout: authTimeout}, now: time.Now}
+	s.save = func(_ context.Context, tok oauthToken) error { return saveToken(path, tok) }
+	if secret != "" {
+		store, err := newSecretStore(secret, filepath.Base(path))
+		if err != nil {
+			s.save = func(context.Context, oauthToken) error { return fmt.Errorf("secret %s: %w", secret, err) }
+		} else {
+			s.save = store.save
+		}
+	}
+	return s
+}
+
+// Check proves at startup that a refreshed token can be stored, by writing the current one back.
+func (s *tokenSource) Check(ctx context.Context) error {
+	if err := s.reload(); err != nil {
+		return err
+	}
+	return s.store(ctx)
+}
+
+func (s *tokenSource) store(ctx context.Context) error {
+	if err := s.save(ctx, s.tok); err != nil {
+		return err
+	}
+	if st, err := os.Stat(s.path); err == nil {
+		s.mod = st.ModTime()
+	}
+	return nil
 }
 
 func (s *tokenSource) Token(ctx context.Context) (oauthToken, error) {
@@ -300,10 +331,8 @@ func (s *tokenSource) refresh(ctx context.Context, now time.Time) {
 		return
 	}
 	s.tok, s.failure = resp.token(s.tok, now), nil
-	if err := saveToken(s.path, s.tok); err != nil {
+	if err := s.store(ctx); err != nil {
 		slog.Error("refreshed openai token not saved, a restart will need a new login", "err", err)
-	} else if st, err := os.Stat(s.path); err == nil {
-		s.mod = st.ModTime()
 	}
 	slog.Info("openai token refreshed", "expires", s.tok.Expires.Format(time.RFC3339))
 }

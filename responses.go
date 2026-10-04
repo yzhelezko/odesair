@@ -34,7 +34,7 @@ func NewResponsesClient(cfg LLMConfig) *ResponsesClient {
 		model:   cfg.Model,
 		effort:  cfg.Effort,
 		session: randomString(),
-		tokens:  newTokenSource(cfg.AuthFile),
+		tokens:  newTokenSource(cfg.AuthFile, cfg.AuthSecret),
 		http:    &http.Client{Timeout: llmTimeout},
 		backoff: llmBackoff,
 	}
@@ -42,6 +42,8 @@ func NewResponsesClient(cfg LLMConfig) *ResponsesClient {
 
 // Notice is appended to outgoing alerts while it is non-empty.
 func (c *ResponsesClient) Notice() string { return c.tokens.Warning() }
+
+func (c *ResponsesClient) Check(ctx context.Context) error { return c.tokens.Check(ctx) }
 
 type responsesRequest struct {
 	Model          string          `json:"model"`

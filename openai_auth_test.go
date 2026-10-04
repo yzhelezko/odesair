@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -108,7 +109,9 @@ func testTokenSource(t *testing.T, issuer *fakeIssuer, tok oauthToken) *tokenSou
 	if err := saveToken(path, tok); err != nil {
 		t.Fatal(err)
 	}
-	return &tokenSource{path: path, issuer: issuer.URL, http: issuer.Client(), now: time.Now}
+	src := newTokenSource(path, "")
+	src.issuer, src.http = issuer.URL, issuer.Client()
+	return src
 }
 
 func TestTokenSourceRefreshRotatesAndPersists(t *testing.T) {
@@ -209,13 +212,59 @@ func TestTokenSourceRefreshesEarlyAndWarnsWhileItFails(t *testing.T) {
 }
 
 func TestTokenSourceRejectsUnusableFile(t *testing.T) {
-	issuer := newFakeIssuer(t)
-	src := &tokenSource{path: filepath.Join(t.TempDir(), "missing.json"), issuer: issuer.URL, http: issuer.Client(), now: time.Now}
+	src := newTokenSource(filepath.Join(t.TempDir(), "missing.json"), "")
 	if _, err := src.Token(context.Background()); err == nil {
 		t.Fatal("missing file must fail")
 	}
 	os.WriteFile(src.path, []byte(`{"access":"a"}`), 0o600)
 	if _, err := src.Token(context.Background()); err == nil {
 		t.Fatal("file without a refresh token must fail")
+	}
+}
+
+func TestTokenSourceKeepsServingWhenTheStoreFails(t *testing.T) {
+	issuer := newFakeIssuer(t)
+	src := testTokenSource(t, issuer, oauthToken{Access: "stale", Refresh: "r0", Expires: time.Now().Add(time.Minute)})
+	src.save = func(context.Context, oauthToken) error { return errors.New("read-only") }
+
+	if err := src.Check(context.Background()); err == nil {
+		t.Fatal("Check must report a store that cannot be written")
+	}
+	if tok, err := src.Token(context.Background()); err != nil || tok.Access != "access-1" {
+		t.Fatalf("a refreshed token must be used even if it could not be stored: %+v, %v", tok, err)
+	}
+}
+
+func TestSecretStorePatchesTheSecret(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "token"), []byte("sa-token\n"), 0o600)
+	os.WriteFile(filepath.Join(dir, "namespace"), []byte("private"), 0o600)
+
+	status := http.StatusOK
+	var request, auth, contentType string
+	var patch map[string]map[string][]byte
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request, auth, contentType = r.Method+" "+r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Content-Type")
+		json.NewDecoder(r.Body).Decode(&patch)
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+	store := &secretStore{api: srv.URL, dir: dir, name: "openai-auth", key: "openai-auth.json", http: srv.Client()}
+
+	if err := store.save(context.Background(), oauthToken{Access: "a", Refresh: "rotated"}); err != nil {
+		t.Fatal(err)
+	}
+	if request != "PATCH /api/v1/namespaces/private/secrets/openai-auth" || auth != "Bearer sa-token" ||
+		contentType != "application/merge-patch+json" {
+		t.Fatalf("request = %q, auth = %q, content type = %q", request, auth, contentType)
+	}
+	var stored oauthToken
+	if err := json.Unmarshal(patch["data"]["openai-auth.json"], &stored); err != nil || stored.Refresh != "rotated" {
+		t.Fatalf("secret data = %s, err = %v", patch["data"]["openai-auth.json"], err)
+	}
+
+	status = http.StatusForbidden
+	if err := store.save(context.Background(), oauthToken{}); err == nil {
+		t.Fatal("a rejected patch must be an error")
 	}
 }

@@ -65,8 +65,13 @@ func run(ctx context.Context) error {
 	siren := NewSiren(sirenCheck(sirenURL), cfg.AlertGrace)
 	tools := NewToolbox(tgc, cfg.Sources, !cfg.SendEnabled, loc)
 	llm := newLLM(cfg.LLM)
-	if n, ok := llm.(interface{ Notice() string }); ok {
-		tools.notice = n.Notice
+	if c, ok := llm.(*ResponsesClient); ok {
+		tools.notice = c.Notice
+		if err := c.Check(ctx); err != nil {
+			slog.Error("openai token store is not usable, a refreshed token will be lost on restart", "err", err)
+		} else {
+			slog.Info("openai token store ok")
+		}
 	}
 	agent := NewAgent(llm, tools, prompt.Text, siren.Status, loc, cfg.LLM.ContextTokens)
 	intake := NewIntake(siren.Open, agent.Enqueue)

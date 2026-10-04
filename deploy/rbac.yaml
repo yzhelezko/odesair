@@ -1,0 +1,27 @@
+# Lets the pod write a refreshed OpenAI token back into its Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: odesair
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: odesair-openai-auth
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["openai-auth"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: odesair-openai-auth
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: odesair-openai-auth
+subjects:
+  - kind: ServiceAccount
+    name: odesair
